@@ -30,6 +30,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      - name: Check GitHub sign-in setup
+        run: |
+          python3 - <<'PY'
+          import sys, json; sys.path.insert(0, "app")
+          import types; sys.modules["core"] = types.SimpleNamespace(APPDATA="/tmp", TEMPLATE_DIR="/tmp", __version__="ci")
+          import cloud
+          try:
+              s = cloud.GitHubCloud().start_sign_in()
+              print(f"GitHub sign-in OK: device flow started (code expires in {s['expires_in']}s)")
+          except Exception as e:
+              print(f"::error::GitHub sign-in check failed: {e}")
+              sys.exit(1)
+          PY
+
       - name: Install NSIS and MinGW
         run: sudo apt-get update -q && sudo apt-get install -y -q nsis gcc-mingw-w64-x86-64
 

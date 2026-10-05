@@ -19,7 +19,7 @@ import urllib.request
 from core import APPDATA, TEMPLATE_DIR, __version__
 
 # Public OAuth App client ID (device flow enabled). Not a secret.
-GITHUB_CLIENT_ID = ""
+GITHUB_CLIENT_ID = "Ov23li12tITbgPr8zlzd"
 
 DEVICE_URL = "https://github.com/login/device/code"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
