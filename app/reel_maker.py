@@ -468,7 +468,93 @@ class Canvas(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
         self.drag = None
+        self.guides = []          # [("v"|"h", position, is_frame_centre)]
         self.setFocusPolicy(Qt.ClickFocus)
+
+    # ---------------------------------------------------------- smart guides
+    SNAP_PX = 8                   # screen pixels
+
+    def snap_targets(self, exclude):
+        """Lines things can line up with, in frame pixels."""
+        a = self.app
+        z = a.zone()
+        xs = [(W / 2, True), (z.left(), False), (z.center().x(), False), (z.right(), False)]
+        ys = [(H / 2, True), (z.top(), False), (z.center().y(), False), (z.bottom(), False)]
+        rects = [o.rect() for o in a.layers if o is not exclude]
+        if exclude != "video":
+            rects.append(a.video_rect())
+        for r in rects:
+            xs += [(r.left(), False), (r.center().x(), False), (r.right(), False)]
+            ys += [(r.top(), False), (r.center().y(), False), (r.bottom(), False)]
+        return xs, ys
+
+    def snap(self, rect, exclude, alt=False):
+        """Return (dx, dy) that lines rect up with the nearest guide, and record
+        the guides to draw. Hold Alt to move freely."""
+        self.guides = []
+        if alt or not self.app.snap_on.isChecked():
+            return 0.0, 0.0
+        s, _, _ = self.geom()
+        tol = self.SNAP_PX / s
+        xs, ys = self.snap_targets(exclude)
+
+        def best(edges, targets):
+            # The frame centre wins whenever it's in reach; otherwise the nearest line.
+            hit = None
+            for e in edges:
+                for t, centre in targets:
+                    d = t - e
+                    if abs(d) > tol:
+                        continue
+                    if (hit is None or (centre and not hit[2])
+                            or (centre == hit[2] and abs(d) < abs(hit[0]))):
+                        hit = (d, t, centre)
+            return hit
+        hx = best((rect.left(), rect.center().x(), rect.right()), xs)
+        hy = best((rect.top(), rect.center().y(), rect.bottom()), ys)
+        dx = hx[0] if hx else 0.0
+        dy = hy[0] if hy else 0.0
+        moved = rect.translated(dx, dy)
+        # show every guide the snapped rect now touches (one line per position)
+        found = {}
+        for kind, edges, targets in (("v", (moved.left(), moved.center().x(), moved.right()), xs),
+                                     ("h", (moved.top(), moved.center().y(), moved.bottom()), ys)):
+            for edge in edges:
+                for t, centre in targets:
+                    if abs(edge - t) < 0.5:
+                        key = (kind, round(t, 1))
+                        found[key] = found.get(key, False) or centre
+        self.guides = [(k, pos, c) for (k, pos), c in found.items()]
+        return dx, dy
+
+    def draw_smart_guides(self, p, s):
+        if not self.guides or not self.drag:
+            return
+        pink = QColor("#FF3EA5")
+        f = QFont(DEFAULT_FONT)
+        f.setPixelSize(max(11, int(11 / s)))
+        f.setWeight(QFont.Bold)
+        p.setFont(f)
+        for kind, pos, centre in self.guides:
+            pen = QPen(pink, (1.6 if centre else 1.1) / s)
+            if not centre:
+                pen.setStyle(Qt.DashLine)
+            p.setPen(pen)
+            if kind == "v":
+                p.drawLine(QPointF(pos, 0), QPointF(pos, H))
+            else:
+                p.drawLine(QPointF(0, pos), QPointF(W, pos))
+            if centre:
+                txt = "Centre"
+                fm = QFontMetricsF(f)
+                tw, th = fm.horizontalAdvance(txt) + 14 / s, fm.height() + 6 / s
+                box = (QRectF(pos - tw / 2, 14 / s, tw, th) if kind == "v"
+                       else QRectF(14 / s, pos - th / 2, tw, th))
+                p.setPen(Qt.NoPen)
+                p.setBrush(pink)
+                p.drawRoundedRect(box, th / 2, th / 2)
+                p.setPen(QColor("white"))
+                p.drawText(box, Qt.AlignCenter, txt)
 
     def geom(self):
         m = 28
@@ -519,6 +605,7 @@ class Canvas(QWidget):
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             p.drawRect(o.rect())
+        self.draw_smart_guides(p, s)
         p.end()
 
     def draw_guides(self, p, s):
@@ -591,9 +678,14 @@ class Canvas(QWidget):
                 self.setCursor(Qt.SizeAllCursor if over_layer or a.video_rect().contains(pt) else Qt.ArrowCursor)
             return
         kind = self.drag[0]
+        alt = bool(e.modifiers() & Qt.AltModifier)
         if kind == "move":
             _, ov, ox, oy = self.drag
             ov.x, ov.y = pt.x() - ox, pt.y() - oy
+            a.clamp_layer(ov)
+            r = ov.rect()
+            dx, dy = self.snap(r, ov, alt)
+            ov.move_to(r.left() + dx, r.top() + dy)
             a.clamp_layer(ov)
             a.layer_changed(sync_panel=False)
         elif kind == "resize":
@@ -607,13 +699,19 @@ class Canvas(QWidget):
             a.layer_changed()
         elif kind == "video":
             _, start, dx0, dy0 = self.drag
-            a.dx.setValue(int(dx0 + pt.x() - start.x()))
-            a.dy.setValue(int(dy0 + pt.y() - start.y()))
+            ndx, ndy = dx0 + pt.x() - start.x(), dy0 + pt.y() - start.y()
+            r = a.video_rect().translated(ndx - a.dx.value(), ndy - a.dy.value())
+            sx, sy = self.snap(r, "video", alt)
+            a.dx.setValue(int(round(ndx + sx)))
+            a.dy.setValue(int(round(ndy + sy)))
+            self.update()
 
     def mouseReleaseEvent(self, e):
         if self.drag and self.drag[0] == "move":
             self.app.layer_changed()
         self.drag = None
+        self.guides = []
+        self.update()
 
 
 # ---------------------------------------------------------------- cover canvas
@@ -1070,6 +1168,12 @@ class ReelMaker(QMainWindow):
         self.show_guides.setChecked(True)
         self.show_guides.toggled.connect(self.canvas.update)
         bottom.addWidget(self.show_guides)
+        bottom.addSpacing(10)
+        self.snap_on = QCheckBox("Snap")
+        self.snap_on.setToolTip("Line things up with the centre, the safe zone and each other. Hold Alt to move freely.")
+        self.snap_on.setChecked(self.settings.value("snap", True, type=bool))
+        self.snap_on.toggled.connect(lambda v: self.settings.setValue("snap", v))
+        bottom.addWidget(self.snap_on)
         v.addLayout(bottom)
         return w
 
