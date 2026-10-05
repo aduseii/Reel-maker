@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 from PySide6.QtCore import Qt, QUrl, QRectF, QPointF, QTimer, QProcess, Signal, QSettings, QSize
-from PySide6.QtGui import (QImage, QPainter, QColor, QPen, QFont, QPainterPath, QPixmap, QIcon, QLinearGradient,
+from PySide6.QtGui import (QDesktopServices, QImage, QPainter, QColor, QPen, QFont, QPainterPath, QPixmap, QIcon, QLinearGradient,
                            QKeySequence, QShortcut, QFontMetricsF, QFontDatabase, QPalette, QAction)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QPushButton,
@@ -1740,6 +1740,19 @@ class ReelMaker(QMainWindow):
         self.export_info = label("", "faint")
         self.export_info.setWordWrap(True)
         pg.add(self.export_info)
+        self.play_out_btn = QPushButton(" Play video")
+        self.play_out_btn.setIcon(icon("play", C["on_accent"], 16))
+        self.play_out_btn.setObjectName("primary")
+        self.play_out_btn.setCursor(Qt.PointingHandCursor)
+        self.play_out_btn.setToolTip("Open the exported reel in your video player")
+        self.play_out_btn.clicked.connect(self.play_export)
+        self.show_out_btn = QPushButton(" Show in folder")
+        self.show_out_btn.setIcon(icon("folder", C["text"], 16))
+        self.show_out_btn.setCursor(Qt.PointingHandCursor)
+        self.show_out_btn.clicked.connect(self.show_export_in_folder)
+        self.done_row = row(self.play_out_btn, self.show_out_btn, None)
+        self.done_row.hide()
+        pg.add(self.done_row)
         pg.finish()
         return pg
 
@@ -2835,6 +2848,26 @@ class ReelMaker(QMainWindow):
         self.top_export.setEnabled(not on)
         self.cancel_btn.setEnabled(on)
 
+    def play_export(self):
+        path = getattr(self, "last_export", None)
+        if not path or not os.path.exists(path):
+            self.status("The exported video isn't there any more.")
+            self.done_row.hide()
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+            self.status("Windows has no video player set for MP4 files.")
+
+    def show_export_in_folder(self):
+        path = getattr(self, "last_export", None)
+        if not path or not os.path.exists(path):
+            self.status("The exported video isn't there any more.")
+            return
+        if sys.platform == "win32":
+            import subprocess
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
+
     def start_export(self, out, ff):
         args, self.export_dur = self.build_ffmpeg_args(out)
         self.export_out = out
@@ -2854,6 +2887,7 @@ class ReelMaker(QMainWindow):
         self.proc.start(ff, args)
         self.set_exporting(True)
         self.progress.setValue(0)
+        self.done_row.hide()
         self.export_info.setText(f"Exporting {os.path.basename(out)}…")
         self.status("Exporting…")
 
@@ -2892,6 +2926,9 @@ class ReelMaker(QMainWindow):
             self.export_info.setText(f"Saved {os.path.basename(self.export_out)}{extra}\n"
                                      f"in {os.path.dirname(self.export_out)}")
             self.status(f"Saved: {self.export_out}")
+            self.last_export = self.export_out
+            self.done_row.show()
+            self.tabs.setCurrentIndex(3)
         else:
             self.export_info.setText("Export failed.")
             QMessageBox.warning(self, "Export failed", "FFmpeg stopped with an error:\n\n" + self.err_tail[-1200:])

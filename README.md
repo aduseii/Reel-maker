@@ -10,7 +10,7 @@ A Windows desktop app that turns a 16:9 video into a 1080 × 1920 Instagram Reel
 - **Alignment guides:** pink lines and snapping when anything lines up with the centre, the safe zone, the video or another layer (hold Alt to move freely)
 - **Templates:** save a layout once, and every new video uses it locked in place. Only the words and images change.
 - **Cover editor:** frame a 9:16 window over the full 16:9 picture, add a title and save a PNG
-- **Export:** H.264 MP4 with AAC audio, ready for Instagram
+- **Export:** H.264 MP4 with AAC audio, ready for Instagram, with **Play video** and **Show in folder** when it finishes
 - **Built-in updates:** one click installs the newest release
 
 ## Install
