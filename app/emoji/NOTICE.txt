@@ -1,0 +1,3 @@
+Emoji artwork: Noto Emoji by Google, Apache License 2.0
+(https://github.com/googlefonts/noto-emoji). SVG packaging by svgmoji (MIT).
+Rendered to 128px WebP for Reel Maker.
