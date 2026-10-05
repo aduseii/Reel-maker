@@ -35,16 +35,13 @@ python app/reel_maker.py
 
 ## Releasing an update
 
-1. Change the code and bump `__version__` in `app/core.py`.
-2. Commit and push to `main`. GitHub Actions builds the installer; download it from the run's **Artifacts**.
-3. To publish it as a release, push a tag:
+1. Change the code.
+2. Bump `__version__` in `app/core.py` (for example `1.1.0` → `1.2.0`).
+3. Commit and push to `main`.
 
-```
-git tag v1.2.0
-git push origin v1.2.0
-```
+GitHub Actions builds the installer (about 3 minutes) and publishes it under **Releases** as `v1.2.0`. Pushes that don't change the version still build an installer; you'll find it in that run's **Artifacts** on the Actions tab.
 
-The installer appears under **Releases**. Installing a new version replaces the old one and keeps your templates.
+Installing a new version replaces the old one and keeps your templates.
 
 ## Where things are saved
 
