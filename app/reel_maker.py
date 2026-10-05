@@ -1343,7 +1343,7 @@ class ReelMaker(QMainWindow):
         self.update_info = None
         self.update_busy = False
         import cloud
-        self.cloud = cloud.GoogleDrive()
+        self.cloud = cloud.GitHubCloud()
         self.cloud_busy = False
         if self.cloud.available and self.cloud.signed_in:
             QTimer.singleShot(3000, lambda: self.cloud_sync(quiet=True))
@@ -2629,16 +2629,16 @@ class ReelMaker(QMainWindow):
             off = m.addAction("Stop using template")
             off.triggered.connect(self.detach_template)
         m.addSeparator()
-        head = m.addAction("Google Drive")
+        head = m.addAction("Cloud (GitHub)")
         head.setEnabled(False)
         cl = self.cloud
         if not cl.available:
             a = m.addAction("Cloud sync isn't set up in this version")
             a.setEnabled(False)
         elif not cl.signed_in:
-            m.addAction("Sign in with Google to sync templates…", self.cloud_sign_in)
+            m.addAction("Sign in with GitHub to sync templates…", self.cloud_sign_in)
         else:
-            a = m.addAction(f"Signed in as {cl.email or 'your Google account'}")
+            a = m.addAction(f"Signed in as {cl.account or 'your GitHub account'}")
             a.setEnabled(False)
             m.addAction("Syncing…" if self.cloud_busy else "Sync now", lambda: self.cloud_sync(quiet=False)) \
                 .setEnabled(not self.cloud_busy)
@@ -3114,24 +3114,77 @@ class ReelMaker(QMainWindow):
         if self.cloud_busy:
             return
         self.cloud_busy = True
-        self.status("Opening Google sign-in in your browser…")
-        opener = lambda url: QTimer.singleShot(0, lambda: QDesktopServices.openUrl(QUrl(url)))
-        def done(email, error):
-            self.cloud_busy = False
+        self.status("Contacting GitHub…")
+
+        def started(start, error):
             if error:
-                QMessageBox.warning(self, "Google Drive", error)
-                self.status("Google sign-in didn't finish.")
+                self.cloud_busy = False
+                QMessageBox.warning(self, "GitHub", error)
+                self.status("GitHub sign-in didn't start.")
                 return
-            self.status(f"Signed in as {email or 'your Google account'}. Syncing templates…")
+            self.show_device_code(start)
+        self.run_in_thread(self.cloud.start_sign_in, started)
+
+    def show_device_code(self, start):
+        from PySide6.QtWidgets import QDialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Sign in with GitHub")
+        dlg.setMinimumWidth(420)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(24, 22, 24, 20)
+        v.setSpacing(12)
+        v.addWidget(label("Sign in with GitHub", "section"))
+        info = QLabel("Enter this code on GitHub to connect Reel Maker to your account:")
+        info.setWordWrap(True)
+        v.addWidget(info)
+        code = QLabel(start["user_code"])
+        code.setAlignment(Qt.AlignCenter)
+        code.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        code.setStyleSheet(f"font-size:30px;font-weight:800;letter-spacing:4px;padding:14px;"
+                           f"background:{C['field']};border:1px solid {C['line2']};border-radius:12px;"
+                           "font-family:'Cascadia Mono',Consolas,monospace")
+        v.addWidget(code)
+        go = QPushButton("Copy code and open GitHub")
+        go.setObjectName("primary")
+        go.setCursor(Qt.PointingHandCursor)
+        url = start.get("verification_uri", "https://github.com/login/device")
+
+        def open_github():
+            QApplication.clipboard().setText(start["user_code"])
+            QDesktopServices.openUrl(QUrl(url))
+            wait.setText("Waiting for you to approve on GitHub… (the code is on your clipboard)")
+        go.clicked.connect(open_github)
+        v.addWidget(go)
+        wait = label(f"Or go to {url} yourself and type the code.", "faint")
+        wait.setWordWrap(True)
+        v.addWidget(wait)
+        cancel = QPushButton("Cancel")
+        cancel.setObjectName("ghost")
+        v.addWidget(row(None, cancel))
+        flag = {"cancel": False}
+        cancel.clicked.connect(dlg.reject)
+        dlg.rejected.connect(lambda: flag.__setitem__("cancel", True))
+
+        def done(login, error):
+            self.cloud_busy = False
+            dlg.blockSignals(True)
+            dlg.close()
+            if error:
+                if not flag["cancel"]:
+                    QMessageBox.warning(self, "GitHub", error)
+                self.status("GitHub sign-in didn't finish.")
+                return
+            self.status(f"Signed in as {login}. Syncing templates…")
             self.cloud_sync(quiet=False)
-        self.run_in_thread(lambda: self.cloud.sign_in(opener), done)
+        self.run_in_thread(lambda: self.cloud.finish_sign_in(start, lambda: flag["cancel"]), done)
+        dlg.show()
 
     def cloud_sign_out(self):
-        r = QMessageBox.question(self, "Google Drive", "Sign out of Google Drive? Your templates stay on this PC "
-                                 "and in your Drive.")
+        r = QMessageBox.question(self, "GitHub", "Sign out of GitHub on this PC? Your templates stay here "
+                                 "and in your GitHub account.")
         if r == QMessageBox.Yes:
             self.cloud.sign_out()
-            self.status("Signed out of Google Drive.")
+            self.status("Signed out of GitHub.")
 
     def cloud_sync(self, quiet=True):
         if self.cloud_busy or not (self.cloud.available and self.cloud.signed_in):
@@ -3139,7 +3192,7 @@ class ReelMaker(QMainWindow):
         import cloud
         self.cloud_busy = True
         if not quiet:
-            self.status("Syncing templates with Google Drive…")
+            self.status("Syncing templates with GitHub…")
         before = self.template_name and self.template_path(self.template_name)
         stamp = os.path.getmtime(before) if before and os.path.exists(before) else None
 
@@ -3148,7 +3201,7 @@ class ReelMaker(QMainWindow):
             if error:
                 self.status(f"Template sync failed: {error}")
                 if not quiet:
-                    QMessageBox.warning(self, "Google Drive", error)
+                    QMessageBox.warning(self, "GitHub", error)
                 return
             # if the template in use was changed on another computer, reload it
             if before and self.locked:
@@ -3157,7 +3210,7 @@ class ReelMaker(QMainWindow):
                 elif not os.path.exists(before):
                     self.detach_template()
             n = res["total"]
-            msg = f"Templates synced with Google Drive ({n} template{'s' if n != 1 else ''})"
+            msg = f"Templates synced with GitHub ({n} template{'s' if n != 1 else ''})"
             changes = [f"{res['downloaded']} downloaded" if res["downloaded"] else "",
                        f"{res['uploaded']} uploaded" if res["uploaded"] else "",
                        f"{res['removed']} removed" if res["removed"] else ""]

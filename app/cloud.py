@@ -1,37 +1,32 @@
-"""Keep Reel Maker templates in the user's Google Drive.
+"""Keep Reel Maker templates on the user's GitHub account.
 
-Templates live in the Drive *app data folder*: a hidden, private folder only
-Reel Maker can see (scope drive.appdata). Sign-in uses Google's desktop flow:
-the browser opens, the user approves, and Google redirects back to a tiny
-web server on 127.0.0.1 that this module runs for a moment (with PKCE).
-
-The OAuth client ID/secret come from google_client.json, which the GitHub
-build writes from repository secrets. Google treats desktop-app secrets as
-not confidential, but keeping them out of the public repo avoids noise.
+Templates are stored as files in one *secret gist* ("Reel Maker templates")
+on the user's account: free, unlisted and not shown on their profile.
+Sign-in uses GitHub's device flow: the app shows a short code, the user
+enters it at github.com/login/device, and the app receives a token limited
+to the `gist` scope. No client secret is needed, so the OAuth app's client
+ID can live in the code. The token is kept encrypted with Windows DPAPI.
 """
 
-import base64
-import hashlib
-import http.server
 import json
 import os
-import secrets
 import socket
-import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from core import APPDATA, TEMPLATE_DIR, res_path
+from core import APPDATA, TEMPLATE_DIR, __version__
 
-AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-TOKEN_URL = "https://oauth2.googleapis.com/token"
-REVOKE_URL = "https://oauth2.googleapis.com/revoke"
-FILES_URL = "https://www.googleapis.com/drive/v3/files"
-UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
-SCOPES = "https://www.googleapis.com/auth/drive.appdata openid email"
-TOKEN_FILE = os.path.join(APPDATA, "cloud", "google.token")
+# Public OAuth App client ID (device flow enabled). Not a secret.
+GITHUB_CLIENT_ID = ""
+
+DEVICE_URL = "https://github.com/login/device/code"
+TOKEN_URL = "https://github.com/login/oauth/access_token"
+API = "https://api.github.com"
+GIST_DESCRIPTION = "Reel Maker templates (managed by the app)"
+INDEX = "_reelmaker_index.json"
+TOKEN_FILE = os.path.join(APPDATA, "cloud", "github.token")
 MANIFEST_FILE = os.path.join(APPDATA, "cloud", "synced.json")
 
 
@@ -40,16 +35,22 @@ class CloudError(Exception):
 
 
 # ---------------------------------------------------------------- secure storage
-def _protect(data: bytes) -> bytes:
-    """Encrypt with Windows DPAPI (only this Windows user can read it)."""
-    if os.name != "nt":
-        return b"plain:" + data
+def _blob_type():
     import ctypes
     from ctypes import wintypes
 
     class BLOB(ctypes.Structure):
         _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
-    src = BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_char)))
+    return ctypes, BLOB
+
+
+def _protect(data: bytes) -> bytes:
+    """Encrypt with Windows DPAPI (only this Windows user can read it)."""
+    if os.name != "nt":
+        return b"plain:" + data
+    ctypes, BLOB = _blob_type()
+    buf = ctypes.create_string_buffer(data, len(data))
+    src = BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
     out = BLOB()
     if not ctypes.windll.crypt32.CryptProtectData(ctypes.byref(src), "ReelMaker", None, None, None, 0,
                                                   ctypes.byref(out)):
@@ -65,13 +66,10 @@ def _unprotect(blob: bytes) -> bytes:
         return blob[6:]
     if not blob.startswith(b"dpapi:") or os.name != "nt":
         raise CloudError("Saved sign-in is unreadable.")
-    import ctypes
-    from ctypes import wintypes
-
-    class BLOB(ctypes.Structure):
-        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+    ctypes, BLOB = _blob_type()
     data = blob[6:]
-    src = BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_char)))
+    buf = ctypes.create_string_buffer(data, len(data))
+    src = BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
     out = BLOB()
     if not ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(src), None, None, None, None, 0,
                                                     ctypes.byref(out)):
@@ -82,221 +80,209 @@ def _unprotect(blob: bytes) -> bytes:
         ctypes.windll.kernel32.LocalFree(out.pbData)
 
 
-# ---------------------------------------------------------------- client config
-def load_client():
-    """Returns (client_id, client_secret) or None when cloud sync isn't set up in this build."""
-    for path in (res_path("google_client.json"), os.path.join(APPDATA, "cloud", "google_client.json")):
-        try:
-            with open(path, encoding="utf-8") as f:
-                d = json.load(f)
-            d = d.get("installed", d)
-            if d.get("client_id") and d.get("client_secret"):
-                return d["client_id"], d["client_secret"]
-        except (OSError, ValueError):
-            pass
-    return None
-
-
+# ---------------------------------------------------------------- http
 def _http(method, url, data=None, headers=None, timeout=30):
-    req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    h = {"User-Agent": f"ReelMaker/{__version__}", "Accept": "application/json"}
+    h.update(headers or {})
+    if isinstance(data, (dict, list)):
+        data = json.dumps(data).encode()
+        h.setdefault("Content-Type", "application/json")
+    req = urllib.request.Request(url, data=data, method=method, headers=h)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
     except (urllib.error.URLError, socket.timeout, OSError) as e:
-        raise CloudError("Couldn't reach Google. Check your internet connection.") from e
+        raise CloudError("Couldn't reach GitHub. Check your internet connection.") from e
 
 
-def _form(d):
-    return urllib.parse.urlencode(d).encode()
+# ---------------------------------------------------------------- GitHub gist storage
+class GitHubCloud:
+    name = "GitHub"
 
-
-# ---------------------------------------------------------------- Google Drive
-class GoogleDrive:
-    def __init__(self):
-        self.client = load_client()
-        self.refresh_token = None
-        self.email = None
-        self._access = None
-        self._expires = 0
+    def __init__(self, client_id=None):
+        self.client_id = client_id if client_id is not None else GITHUB_CLIENT_ID
+        self.token = None
+        self.login = None
+        self.gist_id = None
         self._load()
 
-    # ---- account
     @property
     def available(self):
-        return self.client is not None
+        return bool(self.client_id)
 
     @property
     def signed_in(self):
-        return bool(self.refresh_token)
+        return bool(self.token)
+
+    @property
+    def account(self):
+        return self.login
 
     def _load(self):
         try:
             with open(TOKEN_FILE, "rb") as f:
                 d = json.loads(_unprotect(f.read()).decode())
-            self.refresh_token, self.email = d.get("refresh_token"), d.get("email")
+            self.token, self.login, self.gist_id = d.get("token"), d.get("login"), d.get("gist_id")
         except (OSError, ValueError, CloudError):
-            self.refresh_token = self.email = None
+            self.token = self.login = self.gist_id = None
 
     def _save(self):
         os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
         with open(TOKEN_FILE, "wb") as f:
-            f.write(_protect(json.dumps({"refresh_token": self.refresh_token, "email": self.email}).encode()))
+            f.write(_protect(json.dumps({"token": self.token, "login": self.login,
+                                         "gist_id": self.gist_id}).encode()))
 
-    def sign_in(self, open_browser, timeout=300):
-        """Blocking: opens the browser and waits for Google to send the user back."""
-        if not self.client:
+    # ---- sign-in (device flow)
+    def start_sign_in(self):
+        """Step 1. Returns {"user_code", "verification_uri", "device_code", "interval", "expires_in"}."""
+        if not self.client_id:
             raise CloudError("Cloud sync isn't set up in this version of Reel Maker.")
-        cid, csecret = self.client
-        verifier = secrets.token_urlsafe(64)
-        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-        state = secrets.token_urlsafe(16)
-        result = {}
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                if q.get("state", [""])[0] != state:
-                    self.send_response(400)
-                    self.end_headers()
-                    return
-                result["code"] = q.get("code", [None])[0]
-                result["error"] = q.get("error", [None])[0]
-                ok = bool(result["code"])
-                body = (("<h2>You're signed in to Reel Maker.</h2><p>You can close this tab and go back to the app.</p>"
-                         if ok else "<h2>Sign-in was cancelled.</h2><p>You can close this tab.</p>"))
-                page = ("<!doctype html><meta charset=utf-8><title>Reel Maker</title><body style=\"font-family:"
-                        "system-ui,sans-serif;background:#0d0e10;color:#ececef;display:grid;place-items:center;"
-                        f"height:90vh;text-align:center\"><div>{body}</div>").encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(page)
-
-            def log_message(self, *a):
-                pass
-
-        srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        redirect = f"http://127.0.0.1:{srv.server_port}"
-        url = AUTH_URL + "?" + urllib.parse.urlencode({
-            "client_id": cid, "redirect_uri": redirect, "response_type": "code", "scope": SCOPES,
-            "code_challenge": challenge, "code_challenge_method": "S256", "state": state,
-            "access_type": "offline", "prompt": "consent select_account"})
-        srv.timeout = 1
-        open_browser(url)
-        end = time.time() + timeout
-        try:
-            while "code" not in result and time.time() < end:
-                srv.handle_request()
-        finally:
-            srv.server_close()
-        if not result.get("code"):
-            raise CloudError("Sign-in was cancelled." if result.get("error") or "code" in result
-                             else "Sign-in timed out. Please try again.")
-        st, body = _http("POST", TOKEN_URL, _form({
-            "client_id": cid, "client_secret": csecret, "code": result["code"], "code_verifier": verifier,
-            "grant_type": "authorization_code", "redirect_uri": redirect}),
+        st, body = _http("POST", DEVICE_URL, urllib.parse.urlencode(
+            {"client_id": self.client_id, "scope": "gist"}).encode(),
             {"Content-Type": "application/x-www-form-urlencoded"})
-        tok = json.loads(body or b"{}")
-        if st != 200 or "refresh_token" not in tok:
-            raise CloudError("Google didn't accept the sign-in: " + tok.get("error_description", tok.get("error", str(st))))
-        self.refresh_token = tok["refresh_token"]
-        self._access, self._expires = tok["access_token"], time.time() + tok.get("expires_in", 3600) - 60
-        self.email = _email_from_id_token(tok.get("id_token", ""))
+        d = json.loads(body or b"{}")
+        if st != 200 or "device_code" not in d:
+            raise CloudError("GitHub didn't start the sign-in: " + d.get("error_description", d.get("error", str(st))))
+        return d
+
+    def finish_sign_in(self, start, cancelled=lambda: False):
+        """Step 2 (blocking). Polls until the user approves, denies or the code expires."""
+        interval = int(start.get("interval", 5))
+        end = time.time() + int(start.get("expires_in", 900))
+        while time.time() < end:
+            for _ in range(interval * 10):
+                if cancelled():
+                    raise CloudError("Sign-in was cancelled.")
+                time.sleep(0.1)
+            st, body = _http("POST", TOKEN_URL, urllib.parse.urlencode({
+                "client_id": self.client_id, "device_code": start["device_code"],
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code"}).encode(),
+                {"Content-Type": "application/x-www-form-urlencoded"})
+            d = json.loads(body or b"{}")
+            if d.get("access_token"):
+                self.token = d["access_token"]
+                break
+            err = d.get("error")
+            if err == "authorization_pending":
+                continue
+            if err == "slow_down":
+                interval = int(d.get("interval", interval + 5))
+                continue
+            if err == "access_denied":
+                raise CloudError("Sign-in was cancelled on GitHub.")
+            if err == "expired_token":
+                raise CloudError("The code expired. Please try again.")
+            raise CloudError("GitHub refused the sign-in: " + d.get("error_description", err or str(st)))
+        else:
+            raise CloudError("The code expired. Please try again.")
+        me = json.loads(self._api("GET", f"{API}/user"))
+        self.login = me.get("login")
+        self.gist_id = None
         self._save()
-        return self.email
+        return self.login
 
     def sign_out(self):
-        if self.refresh_token:
-            try:
-                _http("POST", REVOKE_URL, _form({"token": self.refresh_token}),
-                      {"Content-Type": "application/x-www-form-urlencoded"}, timeout=10)
-            except CloudError:
-                pass
-        self.refresh_token = self.email = self._access = None
+        self.token = self.login = self.gist_id = None
         for p in (TOKEN_FILE, MANIFEST_FILE):
             try:
                 os.remove(p)
             except OSError:
                 pass
 
-    def _token(self):
-        if self._access and time.time() < self._expires:
-            return self._access
-        if not self.refresh_token:
+    def _api(self, method, url, data=None):
+        if not self.token:
             raise CloudError("Not signed in.")
-        cid, csecret = self.client
-        st, body = _http("POST", TOKEN_URL, _form({
-            "client_id": cid, "client_secret": csecret, "refresh_token": self.refresh_token,
-            "grant_type": "refresh_token"}), {"Content-Type": "application/x-www-form-urlencoded"})
-        tok = json.loads(body or b"{}")
-        if st != 200:
-            if tok.get("error") == "invalid_grant":
-                self.refresh_token = None
-                try:
-                    os.remove(TOKEN_FILE)
-                except OSError:
-                    pass
-                raise CloudError("Your Google sign-in expired. Please sign in again.")
-            raise CloudError("Google refused the request: " + tok.get("error_description", str(st)))
-        self._access, self._expires = tok["access_token"], time.time() + tok.get("expires_in", 3600) - 60
-        return self._access
-
-    def _api(self, method, url, data=None, headers=None):
-        h = {"Authorization": f"Bearer {self._token()}"}
-        h.update(headers or {})
-        st, body = _http(method, url, data, h)
+        st, body = _http(method, url, data, {"Authorization": f"Bearer {self.token}",
+                                             "Accept": "application/vnd.github+json",
+                                             "X-GitHub-Api-Version": "2022-11-28"})
+        if st == 401:
+            self.sign_out()
+            raise CloudError("Your GitHub sign-in is no longer valid. Please sign in again.")
         if st >= 400:
             try:
-                msg = json.loads(body)["error"]["message"]
+                msg = json.loads(body).get("message")
             except Exception:
-                msg = f"HTTP {st}"
-            raise CloudError(f"Google Drive: {msg}")
+                msg = None
+            raise CloudError(f"GitHub: {msg or f'HTTP {st}'}")
         return body
 
-    # ---- files (in the hidden app folder)
-    def list(self):
-        files, page = [], None
+    # ---- the templates gist
+    def _gist(self):
+        """The gist holding templates (found or created). Returns its JSON."""
+        if self.gist_id:
+            try:
+                return json.loads(self._api("GET", f"{API}/gists/{self.gist_id}"))
+            except CloudError:
+                self.gist_id = None
+        page = 1
         while True:
-            q = {"spaces": "appDataFolder", "pageSize": 200,
-                 "fields": "nextPageToken,files(id,name,modifiedTime,appProperties)"}
-            if page:
-                q["pageToken"] = page
-            d = json.loads(self._api("GET", FILES_URL + "?" + urllib.parse.urlencode(q)))
-            files += d.get("files", [])
-            page = d.get("nextPageToken")
-            if not page:
-                return files
+            gists = json.loads(self._api("GET", f"{API}/gists?per_page=100&page={page}"))
+            for g in gists:
+                if g.get("description") == GIST_DESCRIPTION and INDEX in g.get("files", {}):
+                    self.gist_id = g["id"]
+                    self._save()
+                    return json.loads(self._api("GET", f"{API}/gists/{self.gist_id}"))
+            if len(gists) < 100:
+                break
+            page += 1
+        g = json.loads(self._api("POST", f"{API}/gists", {
+            "description": GIST_DESCRIPTION, "public": False,
+            "files": {INDEX: {"content": json.dumps({"templates": {}}, indent=1)}}}))
+        self.gist_id = g["id"]
+        self._save()
+        return g
+
+    def _file_text(self, f):
+        if f.get("truncated") or f.get("content") is None:
+            st, body = _http("GET", f["raw_url"], headers={"Authorization": f"Bearer {self.token}"})
+            if st != 200:
+                raise CloudError(f"GitHub: couldn't download {f.get('filename')}")
+            return body.decode("utf-8")
+        return f["content"]
+
+    def _index(self, g):
+        f = g["files"].get(INDEX)
+        try:
+            return json.loads(self._file_text(f)).get("templates", {}) if f else {}
+        except ValueError:
+            return {}
+
+    # ---- the interface sync_templates uses
+    def list(self):
+        g = self._gist()
+        self._cache = g
+        idx = self._index(g)
+        return [{"id": name, "name": name, "appProperties": {"saved_at": str(idx.get(name, 0))}}
+                for name in g["files"] if name != INDEX]
 
     def download(self, fid):
-        return self._api("GET", f"{FILES_URL}/{fid}?alt=media")
+        g = getattr(self, "_cache", None) or self._gist()
+        f = g["files"].get(fid)
+        if not f:
+            raise CloudError(f"{fid} is missing from the cloud.")
+        return self._file_text(f).encode("utf-8")
+
+    def _patch(self, files, index_change):
+        g = getattr(self, "_cache", None) or self._gist()
+        idx = self._index(g)
+        for k, v in index_change.items():
+            if v is None:
+                idx.pop(k, None)
+            else:
+                idx[k] = v
+        files = dict(files)
+        files[INDEX] = {"content": json.dumps({"templates": idx}, indent=1)}
+        self._cache = json.loads(self._api("PATCH", f"{API}/gists/{self.gist_id}", {"files": files}))
 
     def upload(self, name, data: bytes, fid=None, props=None):
-        meta = {"name": name, "mimeType": "application/json"}
-        if props:
-            meta["appProperties"] = props
-        if not fid:
-            meta["parents"] = ["appDataFolder"]
-        boundary = "reelmaker" + secrets.token_hex(8)
-        body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{json.dumps(meta)}\r\n"
-                f"--{boundary}\r\nContent-Type: application/json\r\n\r\n").encode() + data + f"\r\n--{boundary}--".encode()
-        url = (f"{UPLOAD_URL}/{fid}" if fid else UPLOAD_URL) + "?uploadType=multipart&fields=id,modifiedTime"
-        d = json.loads(self._api("PATCH" if fid else "POST", url, body,
-                                 {"Content-Type": f"multipart/related; boundary={boundary}"}))
-        return d["id"]
+        stamp = float((props or {}).get("saved_at") or time.time())
+        self._patch({name: {"content": data.decode("utf-8")}}, {name: stamp})
+        return name
 
     def delete(self, fid):
-        self._api("DELETE", f"{FILES_URL}/{fid}")
-
-
-def _email_from_id_token(tok):
-    try:
-        payload = tok.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload)).get("email")
-    except Exception:
-        return None
+        self._patch({fid: None}, {fid: None})
 
 
 # ---------------------------------------------------------------- template sync
@@ -323,30 +309,31 @@ def _stamp(path):
         return 0.0
 
 
-def sync_templates(drive, folder=TEMPLATE_DIR):
-    """Two-way sync of *.json templates between `folder` and Drive.
-    Newest saved_at wins; a template deleted on one side is deleted on the other.
-    Returns a short summary dict."""
+def sync_templates(store, folder=TEMPLATE_DIR):
+    """Two-way sync of *.json templates between `folder` and the cloud store.
+    Newest saved_at wins; a template deleted on one side is deleted on the other."""
     os.makedirs(folder, exist_ok=True)
-    manifest = _load_manifest()          # {filename: {"id":..., "stamp":...}} as of the last sync
-    remote = {f["name"]: f for f in drive.list() if f["name"].lower().endswith(".json")}
+    manifest = _load_manifest()          # {filename: {...}} as of the last sync
+    remote = {f["name"]: f for f in store.list() if f["name"].lower().endswith(".json")}
     local = {n: os.path.join(folder, n) for n in os.listdir(folder) if n.lower().endswith(".json")}
     up = down = removed = 0
     new_manifest = {}
 
+    def rstamp(r):
+        return float((r.get("appProperties") or {}).get("saved_at") or 0)
+
     for name in sorted(set(remote) | set(local) | set(manifest)):
         r, lp, m = remote.get(name), local.get(name), manifest.get(name)
         if r and lp:
-            ls = _stamp(lp)
-            rs = float((r.get("appProperties") or {}).get("saved_at") or 0)
+            ls, rs = _stamp(lp), rstamp(r)
             if ls > rs + 0.5:
                 with open(lp, "rb") as f:
-                    fid = drive.upload(name, f.read(), r["id"], {"saved_at": str(ls)})
+                    fid = store.upload(name, f.read(), r["id"], {"saved_at": str(ls)})
                 new_manifest[name] = {"id": fid, "stamp": ls}
                 up += 1
             elif rs > ls + 0.5:
                 with open(lp, "wb") as f:
-                    f.write(drive.download(r["id"]))
+                    f.write(store.download(r["id"]))
                 new_manifest[name] = {"id": r["id"], "stamp": rs}
                 down += 1
             else:
@@ -358,18 +345,17 @@ def sync_templates(drive, folder=TEMPLATE_DIR):
             else:
                 ls = _stamp(lp)
                 with open(lp, "rb") as f:
-                    fid = drive.upload(name, f.read(), None, {"saved_at": str(ls)})
+                    fid = store.upload(name, f.read(), None, {"saved_at": str(ls)})
                 new_manifest[name] = {"id": fid, "stamp": ls}
                 up += 1
         elif r and not lp:
             if m:                        # was synced before, now gone locally: deleted here
-                drive.delete(r["id"])
+                store.delete(r["id"])
                 removed += 1
             else:
-                rs = float((r.get("appProperties") or {}).get("saved_at") or 0)
                 with open(os.path.join(folder, name), "wb") as f:
-                    f.write(drive.download(r["id"]))
-                new_manifest[name] = {"id": r["id"], "stamp": rs}
+                    f.write(store.download(r["id"]))
+                new_manifest[name] = {"id": r["id"], "stamp": rstamp(r)}
                 down += 1
     _save_manifest(new_manifest)
     return {"uploaded": up, "downloaded": down, "removed": removed, "total": len(new_manifest)}
