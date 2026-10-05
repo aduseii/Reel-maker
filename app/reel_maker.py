@@ -1342,6 +1342,11 @@ class ReelMaker(QMainWindow):
         self.setAcceptDrops(True)
         self.update_info = None
         self.update_busy = False
+        import cloud
+        self.cloud = cloud.GoogleDrive()
+        self.cloud_busy = False
+        if self.cloud.available and self.cloud.signed_in:
+            QTimer.singleShot(3000, lambda: self.cloud_sync(quiet=True))
         QTimer.singleShot(2500, lambda: self.check_updates(quiet=True))
 
     # ============================================================ layout
@@ -2564,7 +2569,7 @@ class ReelMaker(QMainWindow):
     # ============================================================ templates
     def template_state(self, name):
         return {
-            "version": 1, "name": name,
+            "version": 1, "name": name, "saved_at": __import__("time").time(),
             "background": {"mode": self.bg_mode(), "color": color_hex(self.bg_color)},
             "preset": self.preset.currentText(),
             "zone": [self.z[k].value() for k in ("Top", "Bottom", "Left", "Right")],
@@ -2623,6 +2628,21 @@ class ReelMaker(QMainWindow):
             m.addSeparator()
             off = m.addAction("Stop using template")
             off.triggered.connect(self.detach_template)
+        m.addSeparator()
+        head = m.addAction("Google Drive")
+        head.setEnabled(False)
+        cl = self.cloud
+        if not cl.available:
+            a = m.addAction("Cloud sync isn't set up in this version")
+            a.setEnabled(False)
+        elif not cl.signed_in:
+            m.addAction("Sign in with Google to sync templates…", self.cloud_sign_in)
+        else:
+            a = m.addAction(f"Signed in as {cl.email or 'your Google account'}")
+            a.setEnabled(False)
+            m.addAction("Syncing…" if self.cloud_busy else "Sync now", lambda: self.cloud_sync(quiet=False)) \
+                .setEnabled(not self.cloud_busy)
+            m.addAction("Sign out", self.cloud_sign_out)
 
     def save_template(self, name=None):
         if not name:
@@ -2649,6 +2669,7 @@ class ReelMaker(QMainWindow):
         self.lock_btn.setChecked(True)
         self.update_lock_ui()
         self.status(f"Saved template “{name}”. The layout is locked; unlock it to make changes.")
+        self.cloud_sync(quiet=True)
 
     def apply_template_file(self, path, quiet=False):
         try:
@@ -2725,6 +2746,7 @@ class ReelMaker(QMainWindow):
         if name == self.template_name:
             self.detach_template()
         self.status(f"Deleted template “{name}”.")
+        self.cloud_sync(quiet=True)
 
     def detach_template(self):
         self.template_name = None
@@ -3086,6 +3108,62 @@ class ReelMaker(QMainWindow):
         else:
             self.export_info.setText("Export failed.")
             QMessageBox.warning(self, "Export failed", "FFmpeg stopped with an error:\n\n" + self.err_tail[-1200:])
+
+    # ============================================================ cloud templates
+    def cloud_sign_in(self):
+        if self.cloud_busy:
+            return
+        self.cloud_busy = True
+        self.status("Opening Google sign-in in your browser…")
+        opener = lambda url: QTimer.singleShot(0, lambda: QDesktopServices.openUrl(QUrl(url)))
+        def done(email, error):
+            self.cloud_busy = False
+            if error:
+                QMessageBox.warning(self, "Google Drive", error)
+                self.status("Google sign-in didn't finish.")
+                return
+            self.status(f"Signed in as {email or 'your Google account'}. Syncing templates…")
+            self.cloud_sync(quiet=False)
+        self.run_in_thread(lambda: self.cloud.sign_in(opener), done)
+
+    def cloud_sign_out(self):
+        r = QMessageBox.question(self, "Google Drive", "Sign out of Google Drive? Your templates stay on this PC "
+                                 "and in your Drive.")
+        if r == QMessageBox.Yes:
+            self.cloud.sign_out()
+            self.status("Signed out of Google Drive.")
+
+    def cloud_sync(self, quiet=True):
+        if self.cloud_busy or not (self.cloud.available and self.cloud.signed_in):
+            return
+        import cloud
+        self.cloud_busy = True
+        if not quiet:
+            self.status("Syncing templates with Google Drive…")
+        before = self.template_name and self.template_path(self.template_name)
+        stamp = os.path.getmtime(before) if before and os.path.exists(before) else None
+
+        def done(res, error):
+            self.cloud_busy = False
+            if error:
+                self.status(f"Template sync failed: {error}")
+                if not quiet:
+                    QMessageBox.warning(self, "Google Drive", error)
+                return
+            # if the template in use was changed on another computer, reload it
+            if before and self.locked:
+                if os.path.exists(before) and os.path.getmtime(before) != stamp:
+                    self.apply_template_file(before, quiet=True)
+                elif not os.path.exists(before):
+                    self.detach_template()
+            n = res["total"]
+            msg = f"Templates synced with Google Drive ({n} template{'s' if n != 1 else ''})"
+            changes = [f"{res['downloaded']} downloaded" if res["downloaded"] else "",
+                       f"{res['uploaded']} uploaded" if res["uploaded"] else "",
+                       f"{res['removed']} removed" if res["removed"] else ""]
+            changes = ", ".join(c for c in changes if c)
+            self.status(msg + (f": {changes}." if changes else "."))
+        self.run_in_thread(lambda: cloud.sync_templates(self.cloud), done)
 
     # ============================================================ updates
     def run_in_thread(self, fn, done):

@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 *.exe
 installer/launcher/ReelMaker.exe
+app/google_client.json

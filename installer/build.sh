@@ -89,7 +89,13 @@ EOF
 
 echo "==> App files"
 mkdir -p "$STAGE/app"
-cp "$ROOT"/app/{reel_maker.py,core.py,launch.pyw,icon.ico,emoji_list.json} "$STAGE/app/"
+cp "$ROOT"/app/{reel_maker.py,core.py,cloud.py,launch.pyw,icon.ico,emoji_list.json} "$STAGE/app/"
+if [ -n "${GOOGLE_CLIENT_ID:-}" ] && [ -n "${GOOGLE_CLIENT_SECRET:-}" ]; then
+  python3 -c 'import json,os; json.dump({"client_id": os.environ["GOOGLE_CLIENT_ID"].strip(), "client_secret": os.environ["GOOGLE_CLIENT_SECRET"].strip()}, open(os.sys.argv[1], "w"))' "$STAGE/app/google_client.json"
+  echo "==> Google Drive sync: enabled"
+else
+  echo "==> Google Drive sync: not set up (add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET secrets)"
+fi
 cp -r "$ROOT/app/fonts" "$ROOT/app/emoji" "$STAGE/app/"
 cp "$ROOT/app/icon.ico" "$ROOT/installer/get-ffmpeg.ps1" "$STAGE/"
 
