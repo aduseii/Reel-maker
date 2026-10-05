@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 import os
 import re
@@ -579,6 +579,9 @@ class TextLayer:
 
         font, efont = self.font(), self.emoji_font()
         text_h = asc + desc
+        if getattr(self, "editing", False):   # the on-canvas editor draws the words
+            p.restore()
+            return
         passes = [(QColor(0, 0, 0, 120), self.size * 0.05)] if self.shadow else []
         passes.append((self.color, 0))
         for color, off in passes:

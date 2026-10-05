@@ -5,7 +5,7 @@ A Windows desktop app that turns a 16:9 video into a 1080 × 1920 Instagram Reel
 - **Background:** black, white, blurred video or any colour
 - **Safe zones:** Level 1 (clear of all Instagram UI), Level 2, the 3:4 profile-grid crop, or your own margins
 - **Trim** with handles on the timeline
-- **Text boxes** that keep a fixed width and wrap onto new lines, with box or line-highlight styles, an iPhone-style font (Inter Display) and built-in colour emoji with an **Emoji** picker (search, categories, skin tones, recents). You can also load your own colour emoji font (`.ttf`) or a folder of emoji images under **Layers → Text → Emoji → Change**.
+- **Text boxes** you can type into right on the preview (double-click), that keep a fixed width and wrap onto new lines, with box or line-highlight styles, an iPhone-style font (Inter Display) and built-in colour emoji with an **Emoji** picker (search, categories, skin tones, recents). You can also load your own colour emoji font (`.ttf`) or a folder of emoji images under **Layers → Text → Emoji → Change**.
 - **Logos and photos** you can drag, resize and snap to the safe zone
 - **Alignment guides:** pink lines and snapping when anything lines up with the centre, the safe zone, the video or another layer (hold Alt to move freely)
 - **Templates:** save a layout once, and every new video uses it locked in place. Only the words and images change.

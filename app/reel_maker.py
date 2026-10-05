@@ -682,6 +682,90 @@ class EmojiPicker(QFrame):
         self.show()
         self.search.setFocus()
 
+
+# ---------------------------------------------------------------- on-canvas text editing
+class CanvasTextEdit(QPlainTextEdit):
+    """Sits exactly over a text layer on the preview so you can type in place."""
+    done = Signal()
+
+    def __init__(self, canvas, layer):
+        super().__init__(canvas)
+        self.canvas = canvas
+        self.layer = layer
+        self.setFrameShape(QFrame.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.document().setDocumentMargin(0)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setViewportMargins(0, 0, 0, 0)
+        self.setPlainText(layer.text)
+        self.style_from_layer()
+
+    def style_from_layer(self):
+        if getattr(self, "_styling", False):
+            return
+        self._styling = True
+        was = self.blockSignals(True)
+        try:
+            self._apply_style()
+        finally:
+            self.blockSignals(was)
+            self._styling = False
+
+    def _apply_style(self):
+        L = self.layer
+        s, _, _ = self.canvas.geom()
+        f = L.font()
+        f.setPixelSize(max(6, round(L.size * s)))
+        self.setFont(f)
+        c = L.color
+        self.setStyleSheet(
+            "QPlainTextEdit{background:transparent;border:none;padding:0;"
+            f"font-family:'{L.family}';font-size:{f.pixelSize()}px;font-weight:{L.weight};"
+            f"color:rgba({c.red()},{c.green()},{c.blue()},{c.alpha()});"
+            f"selection-background-color:{C['accent']};selection-color:{C['on_accent']}}}")
+        opt = self.document().defaultTextOption()
+        opt.setAlignment({"left": Qt.AlignLeft, "right": Qt.AlignRight}.get(L.align, Qt.AlignHCenter))
+        opt.setWrapMode(opt.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.document().setDefaultTextOption(opt)
+        # match the layer's line spacing
+        fm = QFontMetricsF(f)
+        lh = L.size * L.spacing * s
+        cur = self.textCursor()
+        cur.select(cur.SelectionType.Document)
+        fmt = cur.blockFormat()
+        fmt.setLineHeight(lh, 2)   # 2 = FixedHeight
+        fmt.setAlignment(opt.alignment())
+        cur.mergeBlockFormat(fmt)
+        self._top_pad = max(0.0, (lh - fm.height()) / 2)
+        self.place()
+
+    def place(self):
+        L = self.layer
+        s, ox, oy = self.canvas.geom()
+        r = L.rect()
+        ip = L.inner_pad()
+        top = r.top() + (L.pad if L.style == "box" else 0)
+        lines, _w, lh, *_ = L.layout()
+        x = ox + (r.left() + ip) * s
+        y = oy + top * s + getattr(self, "_top_pad", 0) * 0
+        w = (L.w - 2 * ip) * s + 4
+        h = max(lh, len(lines) * lh) * s + lh * s
+        self.setGeometry(int(x) - 2, int(y), int(w) + 2, int(h))
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape or (e.key() in (Qt.Key_Return, Qt.Key_Enter)
+                                        and e.modifiers() & Qt.ControlModifier):
+            self.done.emit()
+            return
+        super().keyPressEvent(e)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        if e.reason() != Qt.PopupFocusReason:
+            QTimer.singleShot(0, self.done.emit)
+
 # ---------------------------------------------------------------- reel canvas
 class Canvas(QWidget):
     """The 9:16 frame. Drag layers (or the video) to move them; drag a selected
@@ -863,6 +947,8 @@ class Canvas(QWidget):
 
     def mousePressEvent(self, e):
         a = self.app
+        if self.editor:
+            self.finish_edit()
         pt = self.to_frame(e.position())
         o = a.selected()
         s, _, _ = self.geom()
@@ -887,11 +973,70 @@ class Canvas(QWidget):
             self.drag = None
 
     def mouseDoubleClickEvent(self, e):
-        o = self.app.selected()
-        if o and o.kind == "text":
-            self.app.tabs.setCurrentIndex(1)
-            self.app.txt_edit.setFocus()
-            self.app.txt_edit.selectAll()
+        a = self.app
+        pt = self.to_frame(e.position())
+        for i in range(len(a.layers) - 1, -1, -1):
+            o = a.layers[i]
+            if o.kind == "text" and o.rect().contains(pt):
+                a.select_layer(i)
+                self.start_edit(o)
+                return
+
+    # ---------------------------------------------------------- text editing
+    editor = None
+
+    def start_edit(self, layer, select_all=False):
+        self.finish_edit()
+        self.drag = None
+        layer.editing = True
+        ed = CanvasTextEdit(self, layer)
+        ed.textChanged.connect(self.on_edit_text)
+        ed.done.connect(self.finish_edit)
+        self.editor = ed
+        ed.show()
+        ed.setFocus()
+        cur = ed.textCursor()
+        if select_all:
+            cur.select(cur.SelectionType.Document)
+        else:
+            cur.movePosition(cur.MoveOperation.End)
+        ed.setTextCursor(cur)
+        self.app.tabs.setCurrentIndex(1)
+        self.app.status("Typing on the canvas. Press Esc or click outside to finish.")
+        self.update()
+
+    def on_edit_text(self):
+        ed = self.editor
+        if not ed:
+            return
+        a = self.app
+        ed.layer.text = ed.toPlainText()
+        if a.selected() is ed.layer:
+            a.txt_edit.blockSignals(True)
+            a.txt_edit.setPlainText(ed.layer.text)
+            a.txt_edit.blockSignals(False)
+            item = a.layer_list.item(a.sel)
+            if item:
+                item.setText(ed.layer.label())
+        ed.place()
+        a.changed()
+
+    def finish_edit(self):
+        ed = self.editor
+        if not ed:
+            return
+        self.editor = None
+        ed.layer.editing = False
+        ed.hide()
+        ed.deleteLater()
+        self.app.layer_changed()
+        self.app.status("")
+        self.update()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.editor:
+            self.editor.style_from_layer()
 
     def mouseMoveEvent(self, e):
         a = self.app
@@ -1551,8 +1696,9 @@ class ReelMaker(QMainWindow):
         v.setSpacing(10)
         v.addWidget(label("Text", "section"))
         self.txt_edit = QPlainTextEdit()
-        self.txt_edit.setFixedHeight(84)
-        self.txt_edit.setPlaceholderText("Type here. Win + . opens the emoji picker")
+        self.txt_edit.setFixedHeight(132)
+        self.txt_edit.setStyleSheet("QPlainTextEdit{font-size:15px;padding:10px 12px}")
+        self.txt_edit.setPlaceholderText("Type here, or double-click the text on the preview")
         self.txt_edit.textChanged.connect(self.on_layer_controls)
         v.addWidget(self.txt_edit)
         self.emoji_btn = QToolButton()
@@ -1761,6 +1907,14 @@ class ReelMaker(QMainWindow):
         self.statusBar().showMessage(msg)
 
     def changed(self):
+        ed = self.canvas.editor
+        if ed and not ed.hasFocus():
+            if ed.toPlainText() != ed.layer.text:
+                ed.blockSignals(True)
+                ed.setPlainText(ed.layer.text)
+                ed.blockSignals(False)
+        if ed:
+            ed.style_from_layer()
         self.canvas.update()
         self.cover_timer.start()
         key = (EMOJI.font_family, EMOJI.folder)
@@ -2245,8 +2399,8 @@ class ReelMaker(QMainWindow):
         self.refresh_list()
         self.select_layer(len(self.layers) - 1)
         self.tabs.setCurrentIndex(1)
-        self.txt_edit.setFocus()
-        self.txt_edit.selectAll()
+        self.view_stack.setCurrentIndex(0)
+        self.canvas.start_edit(t, select_all=True)
 
     def refresh_list(self):
         self.layer_list.blockSignals(True)
