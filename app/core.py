@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import os
 import re
@@ -43,6 +43,71 @@ def find_ffmpeg():
         return LOCAL_FFMPEG
     import shutil
     return shutil.which("ffmpeg")
+
+
+# ---------------------------------------------------------------- updates
+UPDATE_REPO = "aduseii/Reel-maker"
+UPDATE_API = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+
+
+def version_tuple(v):
+    nums = re.findall(r"\d+", v or "")
+    return tuple(int(n) for n in nums[:4]) or (0,)
+
+
+def check_for_update(timeout=15):
+    """Ask GitHub for the newest release. Returns a dict when it is newer than
+    this copy, None when this copy is up to date. Raises on network errors."""
+    import urllib.request
+    req = urllib.request.Request(UPDATE_API, headers={
+        "Accept": "application/vnd.github+json", "User-Agent": f"ReelMaker/{__version__}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        rel = json.loads(r.read().decode("utf-8"))
+    latest = (rel.get("tag_name") or "").lstrip("vV")
+    if version_tuple(latest) <= version_tuple(__version__):
+        return None
+    asset = next((a for a in rel.get("assets", []) if a.get("name", "").lower().endswith(".exe")), None)
+    if not asset:
+        return None
+    digest = asset.get("digest") or ""
+    return {"version": latest, "notes": (rel.get("body") or "").strip(), "url": asset["browser_download_url"],
+            "size": int(asset.get("size") or 0), "name": asset["name"], "page": rel.get("html_url", ""),
+            "sha256": digest.split(":", 1)[1].lower() if digest.startswith("sha256:") else ""}
+
+
+def download_update(info, state):
+    """Runs in a background thread. Saves the installer to state['path']."""
+    import hashlib
+    import urllib.request
+    try:
+        folder = os.path.join(APPDATA, "updates")
+        os.makedirs(folder, exist_ok=True)
+        dest = os.path.join(folder, info["name"])
+        part = dest + ".part"
+        h = hashlib.sha256()
+        req = urllib.request.Request(info["url"], headers={"User-Agent": f"ReelMaker/{__version__}"})
+        with urllib.request.urlopen(req, timeout=60) as r, open(part, "wb") as f:
+            state["total"] = int(r.headers.get("Content-Length") or info.get("size") or 0)
+            while not state.get("cancel"):
+                chunk = r.read(1 << 16)
+                if not chunk:
+                    break
+                f.write(chunk)
+                h.update(chunk)
+                state["done"] += len(chunk)
+        if state.get("cancel"):
+            os.remove(part)
+            return
+        if info.get("size") and os.path.getsize(part) != info["size"]:
+            raise RuntimeError("The download was incomplete. Please try again.")
+        if info.get("sha256") and h.hexdigest() != info["sha256"]:
+            raise RuntimeError("The download didn't match the published file. Please try again.")
+        os.replace(part, dest)
+        state["path"] = dest
+    except Exception as e:  # noqa
+        state["error"] = str(e) or e.__class__.__name__
+    finally:
+        state["finished"] = True
 
 
 def download_ffmpeg(state):

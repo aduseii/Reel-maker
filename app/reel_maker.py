@@ -21,10 +21,10 @@ from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QSpinBox, QDoubleSpinBox, QSlider, QCheckBox, QLabel, QListWidget,
     QListWidgetItem, QFileDialog, QColorDialog, QLineEdit, QProgressBar, QScrollArea, QMessageBox,
     QSizePolicy, QFrame, QToolButton, QPlainTextEdit, QFontComboBox, QStackedWidget, QTabWidget,
-    QMenu, QInputDialog)
+    QMenu, QInputDialog, QProgressDialog)
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 
-from core import (W, H, ACCENT, DEFAULT_FONT, PRESETS, VIDEO_EXT, IMAGE_EXT, WEIGHTS, APPDATA,
+from core import (__version__, check_for_update, download_update, W, H, ACCENT, DEFAULT_FONT, PRESETS, VIDEO_EXT, IMAGE_EXT, WEIGHTS, APPDATA,
                   TEMPLATE_DIR, EMOJI, ImageLayer, TextLayer, color_hex, res_path, fmt_time,
                   find_ffmpeg, download_ffmpeg)
 
@@ -262,6 +262,15 @@ def icon(kind, color=C["text"], size=20):
         p.drawRoundedRect(QRectF(7, 3.5, 10, 17), 2.5, 2.5)
         p.drawLine(QPointF(9.5, 8), QPointF(14.5, 8))
         p.drawLine(QPointF(9.5, 15.5), QPointF(14.5, 15.5))
+    elif kind == "update":
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(5, 5, 14, 14), 60 * 16, 270 * 16)
+        path = QPainterPath()
+        path.moveTo(15.2, 3.6)
+        path.lineTo(15.8, 7.4)
+        path.lineTo(12, 7.9)
+        p.drawPath(path)
     elif kind == "down":
         p.setPen(pen)
         path = QPainterPath()
@@ -862,6 +871,9 @@ class ReelMaker(QMainWindow):
         self.restore_last_template()
         self.update_lock_ui()
         self.setAcceptDrops(True)
+        self.update_info = None
+        self.update_busy = False
+        QTimer.singleShot(2500, lambda: self.check_updates(quiet=True))
 
     # ============================================================ layout
     def build_ui(self):
@@ -955,6 +967,16 @@ class ReelMaker(QMainWindow):
         self.lock_btn.setCursor(Qt.PointingHandCursor)
         self.lock_btn.toggled.connect(self.set_locked)
         l.addWidget(self.lock_btn)
+
+        self.update_btn = QToolButton()
+        self.update_btn.setObjectName("ghost")
+        self.update_btn.setIcon(icon("update", C["muted"], 18))
+        self.update_btn.setIconSize(QSize(18, 18))
+        self.update_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self.update_btn.setToolTip(f"Reel Maker {__version__}. Click to check for updates")
+        self.update_btn.clicked.connect(self.on_update_clicked)
+        l.addWidget(self.update_btn)
 
         self.tpl_btn = QToolButton()
         self.tpl_btn.setText(" Templates ")
@@ -2487,6 +2509,145 @@ class ReelMaker(QMainWindow):
         else:
             self.export_info.setText("Export failed.")
             QMessageBox.warning(self, "Export failed", "FFmpeg stopped with an error:\n\n" + self.err_tail[-1200:])
+
+    # ============================================================ updates
+    def run_in_thread(self, fn, done):
+        """Run fn() in a background thread, then call done(result, error) on the UI thread."""
+        import threading
+        box = {}
+
+        def work():
+            try:
+                box["result"] = fn()
+            except Exception as e:  # noqa
+                box["error"] = str(e) or e.__class__.__name__
+            box["finished"] = True
+        threading.Thread(target=work, daemon=True).start()
+        timer = QTimer(self)
+
+        def poll():
+            if box.get("finished"):
+                timer.stop()
+                done(box.get("result"), box.get("error"))
+        timer.timeout.connect(poll)
+        timer.start(100)
+
+    def check_updates(self, quiet=False):
+        if self.update_busy:
+            return
+        self.update_busy = True
+        if not quiet:
+            self.status("Checking for updates…")
+
+        def done(info, error):
+            self.update_busy = False
+            if error:
+                if not quiet:
+                    QMessageBox.warning(self, "Updates", "Couldn't check for updates. "
+                                        f"Check your internet connection and try again.\n\n{error}")
+                    self.status("Couldn't check for updates.")
+                return
+            self.update_info = info
+            self.show_update_state()
+            if info and not quiet:
+                self.offer_update(info)
+            elif not quiet:
+                self.status(f"You're up to date (Reel Maker {__version__}).")
+                QMessageBox.information(self, "Updates", f"You have the latest version, Reel Maker {__version__}.")
+        self.run_in_thread(check_for_update, done)
+
+    def show_update_state(self):
+        info = self.update_info
+        if info:
+            self.update_btn.setText(f" Update to {info['version']}")
+            self.update_btn.setIcon(icon("update", C["accent"], 18))
+            self.update_btn.setStyleSheet(f"QToolButton{{color:{C['accent']};font-weight:700;"
+                                          "background:rgba(242,179,27,0.12);border:1px solid rgba(242,179,27,0.35)}")
+            self.update_btn.setToolTip(f"Reel Maker {info['version']} is ready to install")
+        else:
+            self.update_btn.setText("")
+            self.update_btn.setStyleSheet("")
+            self.update_btn.setIcon(icon("update", C["muted"], 18))
+
+    def on_update_clicked(self):
+        if self.update_info:
+            self.offer_update(self.update_info)
+        else:
+            self.check_updates(quiet=False)
+
+    def offer_update(self, info):
+        if self.proc and self.proc.state() != QProcess.NotRunning:
+            QMessageBox.information(self, "Updates", "Wait for the export to finish, then update.")
+            return
+        notes = info.get("notes") or ""
+        notes = re.sub(r"\*\*|__|`|#+ ", "", notes)
+        if len(notes) > 700:
+            notes = notes[:700].rsplit("\n", 1)[0] + "\n…"
+        mb = QMessageBox(self)
+        mb.setWindowTitle("Update available")
+        mb.setIcon(QMessageBox.NoIcon)
+        mb.setText(f"<b>Reel Maker {info['version']} is available</b><br>You have {__version__}.")
+        size = f" ({info['size'] / 1048576:.0f} MB)" if info.get("size") else ""
+        mb.setInformativeText(f"Update now{size}? Reel Maker will close, install the update and reopen. "
+                              "Your templates are kept.")
+        if notes:
+            mb.setDetailedText(notes)
+        go = mb.addButton("Update now", QMessageBox.AcceptRole)
+        mb.addButton("Later", QMessageBox.RejectRole)
+        mb.setDefaultButton(go)
+        mb.exec()
+        if mb.clickedButton() is go:
+            self.download_and_install(info)
+
+    def download_and_install(self, info):
+        import threading
+        state = {"done": 0, "total": 0, "error": None, "finished": False, "path": None}
+        dlg = QProgressDialog(f"Downloading Reel Maker {info['version']}…", "Cancel", 0, 100, self)
+        dlg.setWindowTitle("Updating")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setMinimumWidth(380)
+        dlg.setValue(0)
+        dlg.canceled.connect(lambda: None if state["finished"] else state.__setitem__("cancel", True))
+        threading.Thread(target=download_update, args=(info, state), daemon=True).start()
+        timer = QTimer(self)
+
+        def poll():
+            if state["total"]:
+                dlg.setValue(min(99, int(100 * state["done"] / state["total"])))
+                dlg.setLabelText(f"Downloading Reel Maker {info['version']}…  "
+                                 f"{state['done'] / 1048576:.1f} of {state['total'] / 1048576:.1f} MB")
+            if not state["finished"]:
+                return
+            timer.stop()
+            dlg.canceled.disconnect()
+            dlg.close()
+            if state["path"]:
+                self.launch_installer(state["path"])
+                return
+            if state.get("cancel"):
+                self.status("Update cancelled.")
+                return
+            if state["error"] or not state["path"]:
+                QMessageBox.warning(self, "Updates", f"The update couldn't be downloaded.\n\n{state['error'] or ''}")
+        timer.timeout.connect(poll)
+        timer.start(120)
+
+    def launch_installer(self, path):
+        import subprocess
+        try:
+            if sys.platform == "win32":
+                # /S = silent install; the installer waits for this window to close,
+                # replaces the files and reopens Reel Maker.
+                subprocess.Popen([path, "/S"], close_fds=True,
+                                 creationflags=0x00000008 | 0x00000200)  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+            else:
+                subprocess.Popen([path])
+        except Exception as e:  # noqa
+            QMessageBox.warning(self, "Updates", f"Couldn't start the installer:\n{e}\n\nIt's saved at:\n{path}")
+            return
+        self.player.stop()
+        QApplication.quit()
 
     # ============================================================ drag & drop / keys
     def dragEnterEvent(self, e):

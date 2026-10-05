@@ -35,11 +35,35 @@ VIAddVersionKey "LegalCopyright" "Reel Maker"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
+Function .onInstSuccess
+  IfSilent 0 +2
+    Exec '"$INSTDIR\python\pythonw.exe" -I "$INSTDIR\app\launch.pyw"'
+FunctionEnd
+
 Function LaunchApp
   Exec '"$INSTDIR\python\pythonw.exe" -I "$INSTDIR\app\launch.pyw"'
 FunctionEnd
 
 Section "Install"
+  ; When updating from inside the app, wait until Reel Maker has closed
+  ; (its files can't be replaced while it's running).
+  StrCpy $1 0
+  waitloop:
+    IfFileExists "$INSTDIR\python\python312.dll" 0 waitdone
+    ClearErrors
+    Delete "$INSTDIR\python\python312.dll"
+    IfFileExists "$INSTDIR\python\python312.dll" 0 waitdone
+    IntOp $1 $1 + 1
+    IntCmp $1 40 waitfail
+    Sleep 500
+    Goto waitloop
+  waitfail:
+    IfSilent 0 +2
+      Abort
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Please close Reel Maker, then click OK to continue."
+    StrCpy $1 0
+    Goto waitloop
+  waitdone:
   SetOutPath "$INSTDIR"
   RMDir /r "$INSTDIR\python"
   RMDir /r "$INSTDIR\app"

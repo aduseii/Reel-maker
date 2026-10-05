@@ -10,10 +10,15 @@ A Windows desktop app that turns a 16:9 video into a 1080 × 1920 Instagram Reel
 - **Templates:** save a layout once, and every new video uses it locked in place. Only the words and images change.
 - **Cover editor:** frame a 9:16 window over the full 16:9 picture, add a title and save a PNG
 - **Export:** H.264 MP4 with AAC audio, ready for Instagram
+- **Built-in updates:** one click installs the newest release
 
 ## Install
 
 Download `ReelMakerSetup-x.y.z.exe` from [Releases](../../releases) and run it. Windows may say "Windows protected your PC" because the app isn't signed: click **More info → Run anyway**. Setup downloads the video encoder (about 30 MB) once.
+
+## Updates
+
+Click the circular arrow in the top bar to check for updates. Reel Maker also checks quietly when it starts and shows **Update to x.y.z** when a new version is out. Clicking it downloads the installer from this repo's latest release, checks it, closes the app, installs the update and reopens. Your templates are kept.
 
 ## Making changes
 
