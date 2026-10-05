@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import os
 import re
@@ -214,6 +214,33 @@ def emoji_key(cl):
     return "-".join(f"{ord(c):x}" for c in cl if ord(c) != 0xFE0F)
 
 
+def _has_colour(img):
+    for x in range(4, img.width(), 10):
+        for y in range(4, img.height(), 10):
+            c = img.pixelColor(x, y)
+            if c.alpha() > 40 and max(c.red(), c.green(), c.blue()) - min(c.red(), c.green(), c.blue()) > 30:
+                return True
+    return False
+
+
+def _fit_square(img, size=160, margin=6):
+    """Trim the font's empty padding so the emoji fills its square like the built-in set."""
+    w, h = img.width(), img.height()
+    xs = [x for x in range(w) if any(img.pixelColor(x, y).alpha() > 8 for y in range(0, h, 2))]
+    ys = [y for y in range(h) if any(img.pixelColor(x, y).alpha() > 8 for x in range(0, w, 2))]
+    if not xs or not ys:
+        return img
+    crop = img.copy(xs[0], ys[0], xs[-1] - xs[0] + 1, ys[-1] - ys[0] + 1)
+    inner = size - 2 * margin
+    crop = crop.scaled(inner, inner, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    out = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
+    out.fill(Qt.transparent)
+    p = QPainter(out)
+    p.drawImage((size - crop.width()) // 2, (size - crop.height()) // 2, crop)
+    p.end()
+    return out
+
+
 class EmojiSet:
     """Optional folder of emoji images named by code point (e.g. 1f600.png,
     1f469-200d-1f4bb.png, emoji_u1f600.png). Without one, the system emoji font is used."""
@@ -222,6 +249,50 @@ class EmojiSet:
         self.folder = None
         self.index = {}
         self.cache = {}
+        self.font_family = None   # an emoji font the user loaded; images are the fallback
+        self.font_cache = {}
+
+    def load_font(self, path):
+        """Use a colour emoji font file (.ttf/.otf) the user supplies. Returns its family or None."""
+        from PySide6.QtGui import QFontDatabase
+        fid = QFontDatabase.addApplicationFont(path)
+        fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
+        self.font_family = fams[0] if fams else None
+        self.font_cache = {}
+        return self.font_family
+
+    def clear_font(self):
+        self.font_family = None
+        self.font_cache = {}
+
+    def font_image(self, cl):
+        """Render one emoji from the user's font to a 160 px image (None if the font lacks it)."""
+        key = emoji_key(cl)
+        if key in self.font_cache:
+            return self.font_cache[key]
+        from PySide6.QtGui import QFontMetricsF
+        f = QFont(self.font_family)
+        f.setPixelSize(128)
+        f.setStyleStrategy(QFont.NoFontMerging)
+        img = None
+        if QFontMetricsF(f).inFontUcs4(ord(cl[0])):
+            img = QImage(160, 160, QImage.Format_ARGB32_Premultiplied)
+            img.fill(Qt.transparent)
+            p = QPainter(img)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setRenderHint(QPainter.TextAntialiasing)
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.setFont(f)
+            p.drawText(QRectF(0, 0, 160, 160), Qt.AlignCenter, cl)
+            p.end()
+            if not any(img.pixelColor(x, y).alpha() for x in range(4, 160, 8) for y in range(4, 160, 8)):
+                img = None
+            elif not _has_colour(img):
+                img = None    # a plain black-and-white glyph means the font isn't a colour emoji font
+            else:
+                img = _fit_square(img)
+        self.font_cache[key] = img
+        return img
 
     def load(self, folder):
         index = {}
@@ -244,6 +315,10 @@ class EmojiSet:
         self.folder, self.index, self.cache = None, {}, {}
 
     def image(self, cl):
+        if self.font_family:
+            img = self.font_image(cl)
+            if img is not None:
+                return img
         if not self.index:
             return None
         key = emoji_key(cl)
@@ -383,7 +458,7 @@ class TextLayer:
     # layout --------------------------------------------------------
     def layout(self):
         key = (self.text, self.family, self.weight, self.size, self.w, self.style, self.pad,
-               self.spacing, EMOJI.folder)
+               self.spacing, EMOJI.folder, EMOJI.font_family)
         if key == self._cache_key:
             return self._layout
         fm = QFontMetricsF(self.font())

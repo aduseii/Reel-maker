@@ -1394,14 +1394,20 @@ class ReelMaker(QMainWindow):
         v.addWidget(self.txt_shadow)
 
         self.emoji_label = label("Built-in emoji", "faint")
-        eb = QPushButton("Change…")
+        eb = QToolButton()
+        eb.setText("Change  ")
+        eb.setIcon(icon("down", C["muted"], 14))
+        eb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        eb.setLayoutDirection(Qt.RightToLeft)
         eb.setObjectName("ghost")
-        eb.setToolTip("Use a folder of emoji PNGs named by code point, e.g. 1f600.png")
-        eb.clicked.connect(self.pick_emoji_folder)
-        ec = QPushButton("Reset")
-        ec.setObjectName("ghost")
-        ec.clicked.connect(self.clear_emoji_folder)
-        v.addWidget(field("Emoji", row(self.emoji_label, None, eb, ec)))
+        eb.setPopupMode(QToolButton.InstantPopup)
+        em = QMenu(eb)
+        em.addAction("Use an emoji font file…", self.pick_emoji_font)
+        em.addAction("Use a folder of emoji images…", self.pick_emoji_folder)
+        em.addSeparator()
+        em.addAction("Back to built-in emoji", self.clear_emoji_folder)
+        eb.setMenu(em)
+        v.addWidget(field("Emoji", row(self.emoji_label, None, eb)))
         self.text_style_controls = [self.txt_font, self.load_font_btn, self.txt_weight, self.txt_size,
                                     self.txt_color, self.align_seg, self.txt_width, self.txt_spacing,
                                     self.txt_style, self.txt_box_color, self.txt_box_alpha,
@@ -1565,6 +1571,9 @@ class ReelMaker(QMainWindow):
             self.emoji_label.setText(f"Your folder ({len(EMOJI.index):,})")
         else:
             self.use_builtin_emoji()
+        font = self.settings.value("emoji_font", "", type=str)
+        if font and os.path.isfile(font) and EMOJI.load_font(font):
+            self.emoji_label.setText(os.path.basename(font))
 
     def use_builtin_emoji(self):
         n = EMOJI.load(res_path("emoji"))
@@ -1590,6 +1599,8 @@ class ReelMaker(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Folder of emoji images")
         if not folder:
             return
+        EMOJI.clear_font()
+        self.settings.setValue("emoji_font", "")
         n = EMOJI.load(folder)
         if not n:
             self.use_builtin_emoji()
@@ -1599,8 +1610,25 @@ class ReelMaker(QMainWindow):
         self.emoji_label.setText(f"Your folder ({n:,})")
         self.changed()
 
+    def pick_emoji_font(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Emoji font", "", "Fonts (*.ttf *.otf *.ttc)")
+        if not path:
+            return
+        fam = EMOJI.load_font(path)
+        if not fam or EMOJI.font_image("😀") is None:
+            EMOJI.clear_font()
+            QMessageBox.warning(self, "Emoji font", "That file doesn't look like a colour emoji font, "
+                                "so Reel Maker will keep using the current emoji.")
+            return
+        self.settings.setValue("emoji_font", path)
+        self.emoji_label.setText(os.path.basename(path))
+        self.status(f"Using emoji from {os.path.basename(path)}. Anything it doesn't have falls back to the built-in set.")
+        self.changed()
+
     def clear_emoji_folder(self):
         self.settings.setValue("emoji_folder", "")
+        self.settings.setValue("emoji_font", "")
+        EMOJI.clear_font()
         self.use_builtin_emoji()
         self.changed()
 
