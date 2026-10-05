@@ -456,6 +456,232 @@ class SidePage(QScrollArea):
         self.lay.addStretch(1)
 
 
+
+# ---------------------------------------------------------------- emoji picker
+SKIN_TONES = ["", "\U0001F3FB", "\U0001F3FC", "\U0001F3FD", "\U0001F3FE", "\U0001F3FF"]
+CATEGORY_ICONS = {"Recent": "🕘", "Smileys & Emotion": "😀", "People & Body": "👋", "Animals & Nature": "🐻",
+                  "Food & Drink": "🍔", "Travel & Places": "✈️", "Activities": "⚽", "Objects": "💡",
+                  "Symbols": "❤️", "Flags": "🏁"}
+
+
+def load_emoji_list():
+    try:
+        with open(res_path("emoji_list.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def with_tone(e, tone):
+    if not tone:
+        return e
+    base = e.replace("\ufe0f", "", 1) if len(e) > 1 and e[1] == "\ufe0f" else e
+    return base[0] + tone + base[1:]
+
+
+class EmojiPicker(QFrame):
+    """Pop-up emoji grid drawn in the emoji style the app is using."""
+    picked = Signal(str)
+
+    def __init__(self, app):
+        super().__init__(app, Qt.Popup)
+        self.app = app
+        self.setObjectName("emojiPicker")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(f"#emojiPicker{{background:{C['raised']};border:1px solid {C['line2']};border-radius:12px}}"
+                           "QListWidget{background:transparent;border:none;padding:0}"
+                           f"QListWidget::item{{padding:0;border-radius:8px}}"
+                           f"QListWidget::item:hover{{background:{C['raised2']}}}"
+                           "QListWidget::item:selected{background:transparent}")
+        self.setFixedSize(392, 420)
+        self.data = load_emoji_list()
+        self.names = {e: n for _, items in self.data for e, n, _ in items}
+        self.skin = {e for _, items in self.data for e, _, sk in items if sk}
+        self.icons = {}
+        self.tone = SKIN_TONES[min(5, max(0, app.settings.value("skin_tone", 0, type=int)))]
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 10, 10, 8)
+        v.setSpacing(8)
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search emoji")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self.on_search)
+        top.addWidget(self.search, 1)
+        self.tone_btn = QToolButton()
+        self.tone_btn.setObjectName("ghost")
+        self.tone_btn.setToolTip("Skin tone")
+        self.tone_btn.setIconSize(QSize(22, 22))
+        self.tone_btn.setStyleSheet("QToolButton{padding:4px}")
+        self.tone_btn.setPopupMode(QToolButton.InstantPopup)
+        tm = QMenu(self.tone_btn)
+        for i, t in enumerate(SKIN_TONES):
+            a = tm.addAction(self.emoji_icon("👋" + t if t else "👋"), ["Default", "Light", "Medium-light", "Medium",
+                                                                      "Medium-dark", "Dark"][i])
+            a.triggered.connect(lambda _=False, t=t, i=i: self.set_tone(t, i))
+        self.tone_btn.setMenu(tm)
+        top.addWidget(self.tone_btn)
+        v.addLayout(top)
+
+        self.cats = QWidget()
+        cl = QHBoxLayout(self.cats)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(2)
+        self.cat_group = QButtonGroup(self)
+        self.cat_names = ["Recent"] + [g for g, _ in self.data]
+        for i, name in enumerate(self.cat_names):
+            b = QToolButton()
+            b.setObjectName("ghost")
+            b.setCheckable(True)
+            b.setToolTip(name.replace("&", "&&"))
+            b.setIcon(self.emoji_icon(CATEGORY_ICONS.get(name, "😀")))
+            b.setIconSize(QSize(20, 20))
+            b.setFixedSize(34, 32)
+            b.setStyleSheet("QToolButton{padding:2px}")
+            b.setCursor(Qt.PointingHandCursor)
+            self.cat_group.addButton(b, i)
+            cl.addWidget(b)
+        cl.addStretch(1)
+        self.cat_group.idClicked.connect(self.show_category)
+        v.addWidget(self.cats)
+
+        self.title = label("", "section")
+        v.addWidget(self.title)
+        self.grid = QListWidget()
+        self.grid.setViewMode(QListWidget.IconMode)
+        self.grid.setIconSize(QSize(30, 30))
+        self.grid.setGridSize(QSize(40, 40))
+        self.grid.setUniformItemSizes(True)
+        self.grid.setMovement(QListWidget.Static)
+        self.grid.setResizeMode(QListWidget.Adjust)
+        self.grid.setMouseTracking(True)
+        self.grid.setCursor(Qt.PointingHandCursor)
+        self.grid.itemClicked.connect(self.on_pick)
+        self.grid.itemEntered.connect(lambda it: self.hint.setText(it.toolTip()))
+        v.addWidget(self.grid, 1)
+        self.hint = label("", "faint")
+        v.addWidget(self.hint)
+        self.update_tone_button()
+
+    # ------------------------------------------------------------------
+    def style_key(self):
+        return (EMOJI.font_family, EMOJI.folder)
+
+    def emoji_icon(self, e):
+        key = (e, self.style_key())
+        ic = self.icons.get(key)
+        if ic is None:
+            img = EMOJI.image(e)
+            if img is None:
+                pm = QPixmap(64, 64)
+                pm.fill(Qt.transparent)
+                p = QPainter(pm)
+                f = QFont()
+                f.setFamilies(["Segoe UI Emoji", "Noto Color Emoji"])
+                f.setPixelSize(48)
+                p.setFont(f)
+                p.drawText(QRectF(0, 0, 64, 64), Qt.AlignCenter, e)
+                p.end()
+            else:
+                pm = QPixmap.fromImage(img.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            ic = QIcon(pm)
+            self.icons[key] = ic
+        return ic
+
+    def toned(self, e):
+        if self.tone and e in self.skin:
+            t = with_tone(e, self.tone)
+            if EMOJI.image(t) is not None:
+                return t
+        return e
+
+    def fill(self, emojis):
+        self.grid.clear()
+        for e in emojis:
+            e2 = self.toned(e)
+            it = QListWidgetItem(self.emoji_icon(e2), "")
+            it.setData(Qt.UserRole, e2)
+            it.setToolTip(self.names.get(e, "").capitalize())
+            it.setSizeHint(QSize(40, 40))
+            self.grid.addItem(it)
+        self.grid.scrollToTop()
+
+    def recent(self):
+        return [e for e in (self.app.settings.value("recent_emoji", [], type=list) or []) if e]
+
+    def show_category(self, i):
+        self.search.blockSignals(True)
+        self.search.clear()
+        self.search.blockSignals(False)
+        name = self.cat_names[i]
+        self.cat_group.button(i).setChecked(True)
+        self.title.setText(name.upper())
+        if name == "Recent":
+            items = self.recent()
+            self.hint.setText("" if items else "Emoji you use will show up here.")
+        else:
+            items = [e for e, _, _ in dict(self.data)[name]]
+            self.hint.setText("")
+        self.fill(items)
+
+    def on_search(self, text):
+        q = text.strip().lower()
+        if not q:
+            self.show_category(max(0, self.cat_group.checkedId()))
+            return
+        words = q.split()
+
+        def rank(n):
+            if n == q:
+                return 0
+            if n.startswith(q):
+                return 1
+            if all(any(t.startswith(w) for t in n.replace("-", " ").split()) for w in words):
+                return 2
+            return 3
+        hits = [(rank(n), i, e) for i, (e, n) in enumerate((e, n) for _, items in self.data for e, n, _ in items)
+                if all(w in n for w in words)]
+        hits = [e for _, _, e in sorted(hits)]
+        self.title.setText(f"RESULTS FOR “{text.strip().upper()}”")
+        self.hint.setText("" if hits else "No emoji found.")
+        self.fill(hits[:240])
+
+    def on_pick(self, it):
+        e = it.data(Qt.UserRole)
+        base = next((b for b in self.names if with_tone(b, self.tone) == e), e)
+        rec = [base] + [x for x in self.recent() if x != base]
+        self.app.settings.setValue("recent_emoji", rec[:40])
+        self.picked.emit(e)
+
+    def set_tone(self, t, i):
+        self.tone = t
+        self.app.settings.setValue("skin_tone", i)
+        self.update_tone_button()
+        if self.search.text().strip():
+            self.on_search(self.search.text())
+        else:
+            self.show_category(max(0, self.cat_group.checkedId()))
+
+    def update_tone_button(self):
+        self.tone_btn.setIcon(self.emoji_icon("👋" + self.tone if self.tone else "👋"))
+
+    def open_at(self, widget):
+        # refresh category icons in case the emoji style changed
+        for i, name in enumerate(self.cat_names):
+            self.cat_group.button(i).setIcon(self.emoji_icon(CATEGORY_ICONS.get(name, "😀")))
+        self.update_tone_button()
+        self.show_category(0 if self.recent() else 1)
+        pos = widget.mapToGlobal(widget.rect().bottomLeft())
+        scr = widget.screen().availableGeometry()
+        x = min(pos.x(), scr.right() - self.width() - 8)
+        y = pos.y() + 6
+        if y + self.height() > scr.bottom():
+            y = widget.mapToGlobal(widget.rect().topLeft()).y() - self.height() - 6
+        self.move(x, y)
+        self.show()
+        self.search.setFocus()
+
 # ---------------------------------------------------------------- reel canvas
 class Canvas(QWidget):
     """The 9:16 frame. Drag layers (or the video) to move them; drag a selected
@@ -1329,6 +1555,14 @@ class ReelMaker(QMainWindow):
         self.txt_edit.setPlaceholderText("Type here. Win + . opens the emoji picker")
         self.txt_edit.textChanged.connect(self.on_layer_controls)
         v.addWidget(self.txt_edit)
+        self.emoji_btn = QToolButton()
+        self.emoji_btn.setText(" Emoji")
+        self.emoji_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.emoji_btn.setIconSize(QSize(18, 18))
+        self.emoji_btn.setCursor(Qt.PointingHandCursor)
+        self.emoji_btn.setToolTip("Insert an emoji at the cursor")
+        self.emoji_btn.clicked.connect(self.open_emoji_picker)
+        v.addWidget(row(self.emoji_btn, None))
 
         self.txt_font = QFontComboBox()
         self.txt_font.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
@@ -1516,6 +1750,10 @@ class ReelMaker(QMainWindow):
     def changed(self):
         self.canvas.update()
         self.cover_timer.start()
+        key = (EMOJI.font_family, EMOJI.folder)
+        if getattr(self, "_emoji_style", None) != key:
+            self._emoji_style = key
+            self.refresh_emoji_button()
 
     def space_pressed(self):
         if isinstance(QApplication.focusWidget(), (QLineEdit, QPlainTextEdit, QAbstractSpinBoxType)):
@@ -1609,6 +1847,22 @@ class ReelMaker(QMainWindow):
         self.settings.setValue("emoji_folder", folder)
         self.emoji_label.setText(f"Your folder ({n:,})")
         self.changed()
+
+    def open_emoji_picker(self):
+        if not hasattr(self, "emoji_picker"):
+            self.emoji_picker = EmojiPicker(self)
+            self.emoji_picker.picked.connect(self.insert_emoji)
+        self.emoji_picker.open_at(self.emoji_btn)
+
+    def insert_emoji(self, e):
+        self.txt_edit.insertPlainText(e)
+        self.txt_edit.ensureCursorVisible()
+
+    def refresh_emoji_button(self):
+        img = EMOJI.image("😀")
+        if img is not None and hasattr(self, "emoji_btn"):
+            self.emoji_btn.setIcon(QIcon(QPixmap.fromImage(img.scaled(48, 48, Qt.KeepAspectRatio,
+                                                                      Qt.SmoothTransformation))))
 
     def pick_emoji_font(self):
         path, _ = QFileDialog.getOpenFileName(self, "Emoji font", "", "Fonts (*.ttf *.otf *.ttc)")
