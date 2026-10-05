@@ -30,8 +30,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Install NSIS
-        run: sudo apt-get update -q && sudo apt-get install -y -q nsis
+      - name: Install NSIS and MinGW
+        run: sudo apt-get update -q && sudo apt-get install -y -q nsis gcc-mingw-w64-x86-64
 
       - name: Build
         run: bash installer/build.sh

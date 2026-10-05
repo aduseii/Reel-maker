@@ -3101,11 +3101,8 @@ def install_error_log():
 
 def main():
     if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ReelMaker.App")
-        except Exception:
-            pass
+        # No explicit AppUserModelID: Windows identifies the app by ReelMaker.exe,
+        # so a pinned taskbar icon shows the Reel Maker logo and relaunches correctly.
         import PySide6
         plug = os.path.join(os.path.dirname(PySide6.__file__), "plugins", "multimedia", "ffmpegmediaplugin.dll")
         if not os.path.exists(plug):

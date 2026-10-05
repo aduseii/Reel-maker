@@ -92,6 +92,10 @@ mkdir -p "$STAGE/app"
 cp "$ROOT"/app/{reel_maker.py,core.py,launch.pyw,icon.ico,emoji_list.json} "$STAGE/app/"
 cp -r "$ROOT/app/fonts" "$ROOT/app/emoji" "$STAGE/app/"
 cp "$ROOT/app/icon.ico" "$ROOT/installer/get-ffmpeg.ps1" "$STAGE/"
+
+echo "==> ReelMaker.exe launcher"
+bash "$ROOT/installer/launcher/build.sh"
+cp "$ROOT/installer/launcher/ReelMaker.exe" "$STAGE/python/ReelMaker.exe"
 cp "$ROOT/installer/installer.nsi" "$WORK/"
 
 echo "==> Installer"

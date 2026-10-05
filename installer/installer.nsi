@@ -37,11 +37,11 @@ VIAddVersionKey "LegalCopyright" "Reel Maker"
 
 Function .onInstSuccess
   IfSilent 0 +2
-    Exec '"$INSTDIR\python\pythonw.exe" -I "$INSTDIR\app\launch.pyw"'
+    Exec '"$INSTDIR\python\ReelMaker.exe"'
 FunctionEnd
 
 Function LaunchApp
-  Exec '"$INSTDIR\python\pythonw.exe" -I "$INSTDIR\app\launch.pyw"'
+  Exec '"$INSTDIR\python\ReelMaker.exe"'
 FunctionEnd
 
 Section "Install"
@@ -79,15 +79,15 @@ Section "Install"
   ffdone:
 
   CreateDirectory "$SMPROGRAMS\${APP}"
-  CreateShortCut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\python\pythonw.exe" '-I "$INSTDIR\app\launch.pyw"' "$INSTDIR\icon.ico" 0
+  CreateShortCut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\python\ReelMaker.exe" "" "$INSTDIR\python\ReelMaker.exe" 0
   CreateShortCut "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk" "$INSTDIR\Uninstall.exe"
-  CreateShortCut "$DESKTOP\${APP}.lnk" "$INSTDIR\python\pythonw.exe" '-I "$INSTDIR\app\launch.pyw"' "$INSTDIR\icon.ico" 0
+  CreateShortCut "$DESKTOP\${APP}.lnk" "$INSTDIR\python\ReelMaker.exe" "" "$INSTDIR\python\ReelMaker.exe" 0
 
   WriteRegStr HKCU "Software\ReelMaker" "InstallDir" "$INSTDIR"
   !define UNKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\ReelMaker"
   WriteRegStr HKCU "${UNKEY}" "DisplayName" "${APP}"
   WriteRegStr HKCU "${UNKEY}" "DisplayVersion" "${VER}"
-  WriteRegStr HKCU "${UNKEY}" "DisplayIcon" "$INSTDIR\icon.ico"
+  WriteRegStr HKCU "${UNKEY}" "DisplayIcon" "$INSTDIR\python\ReelMaker.exe"
   WriteRegStr HKCU "${UNKEY}" "Publisher" "Reel Maker"
   WriteRegStr HKCU "${UNKEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNKEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'

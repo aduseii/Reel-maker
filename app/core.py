@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 import os
 import re
