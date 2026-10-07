@@ -3000,15 +3000,18 @@ class ReelMaker(QMainWindow):
                 "-loop", "1", "-t", f"{dur:.3f}", "-i", ov_png]
         fc = []
         mode = self.bg_mode()
+        # The background is made from the video's own frames, so both start on the very same
+        # frame. (A separately generated background started before the trimmed video's first
+        # frame arrived, which showed up as a blank frame at the start of the reel.)
+        fc.append("[0:v]setpts=PTS-STARTPTS,split=2[src][bgsrc]")
         if mode == "blur":
-            fc.append("[0:v]split=2[src][bgsrc]")
             fc.append(f"[bgsrc]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
                       f"boxblur=luma_radius=40:luma_power=2,eq=brightness=-0.12,setsar=1[bg]")
-            vin = "[src]"
         else:
             c = {"black": "000000", "white": "FFFFFF"}.get(mode, self.bg_color.name()[1:])
-            fc.append(f"color=c=0x{c}:s={W}x{H}:r=30:d={dur:.3f}[bg]")
-            vin = "[0:v]"
+            fc.append(f"[bgsrc]scale={W}:{H},setsar=1,format=yuv420p,"
+                      f"drawbox=x=0:y=0:w=iw:h=ih:color=0x{c}@1:t=fill[bg]")
+        vin = "[src]"
         fc.append(f"{vin}scale={vw}:{vh}:flags=lanczos,setsar=1[v]")
         vlabel = "[v]"
         rad = self.radius.value()
@@ -3031,10 +3034,10 @@ class ReelMaker(QMainWindow):
             vlabel = "[vr]"
         fps = {0: "30", 1: "60"}.get(self.fps.value())
         tail = f",fps={fps}" if fps else ""
-        fc.append(f"[bg]{vlabel}overlay=x={x}:y={y}:shortest=1[b1]")
+        fc.append(f"[bg]{vlabel}overlay=x={x}:y={y}:shortest=1:eof_action=endall[b1]")
         fc.append(f"[b1][1:v]overlay=0:0:shortest=1{tail},format=yuv420p[out]")
         crf = {0: "18", 1: "21", 2: "25"}.get(self.quality.value(), "18")
-        args += ["-filter_complex", ";".join(fc), "-map", "[out]", "-map", "0:a?",
+        args += ["-filter_complex", ";".join(fc), "-map", "[out]", "-map", "0:a?", "-af", "asetpts=PTS-STARTPTS",
                  "-c:v", "libx264", "-preset", "medium", "-crf", crf, "-profile:v", "high",
                  "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
                  "-t", f"{dur:.3f}", "-movflags", "+faststart",
