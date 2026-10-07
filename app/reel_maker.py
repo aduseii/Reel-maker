@@ -262,6 +262,13 @@ def icon(kind, color=C["text"], size=20):
         p.drawRoundedRect(QRectF(7, 3.5, 10, 17), 2.5, 2.5)
         p.drawLine(QPointF(9.5, 8), QPointF(14.5, 8))
         p.drawLine(QPointF(9.5, 15.5), QPointF(14.5, 15.5))
+    elif kind == "cut":
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(7, 17), 2.6, 2.6)
+        p.drawEllipse(QPointF(17, 17), 2.6, 2.6)
+        p.drawLine(QPointF(8.8, 15.2), QPointF(16.5, 5))
+        p.drawLine(QPointF(15.2, 15.2), QPointF(7.5, 5))
     elif kind == "update":
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
@@ -1315,6 +1322,8 @@ class ReelMaker(QMainWindow):
         self._priming = False
         self.fallback = False
         self.fb_pos = 0.0
+        self.clip_in = 0.0          # the part of the source the timeline shows (absolute seconds);
+        self.clip_out = 0.0         # "Delete trimmed parts" narrows it, "Restore" widens it again
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
@@ -1495,11 +1504,27 @@ class ReelMaker(QMainWindow):
         top.addWidget(self.time_label)
         self.timeline = Timeline()
         self.timeline.trimChanged.connect(self.on_timeline_trim)
-        self.timeline.seek.connect(self.seek_to)
+        self.timeline.seek.connect(lambda t: self.seek_to(self.clip_in + t))
         top.addWidget(self.timeline, 1)
+        self.cut_btn = QPushButton(" Delete trimmed parts")
+        self.cut_btn.setIcon(icon("cut", C["text"], 16))
+        self.cut_btn.setToolTip("Remove everything outside the yellow handles from the timeline. "
+                                "Your original video file isn't changed.")
+        self.cut_btn.setCursor(Qt.PointingHandCursor)
+        self.cut_btn.clicked.connect(self.delete_trimmed)
+        self.cut_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.cut_btn.hide()
+        self.restore_btn = QPushButton("Restore full clip")
+        self.restore_btn.setObjectName("ghost")
+        self.restore_btn.setToolTip("Bring back the parts you deleted")
+        self.restore_btn.clicked.connect(self.restore_clip)
+        self.restore_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.restore_btn.hide()
         self.dur_label = QLabel("0:00.00")
         self.dur_label.setObjectName("mono")
         top.addWidget(self.dur_label)
+        top.addWidget(self.cut_btn)
+        top.addWidget(self.restore_btn)
         v.addLayout(top)
 
         bottom = QHBoxLayout()
@@ -1518,12 +1543,12 @@ class ReelMaker(QMainWindow):
         b1 = QPushButton("Set in")
         b1.setObjectName("ghost")
         b1.setToolTip("Start the reel at the playhead")
-        b1.clicked.connect(lambda: self.t_start.setValue(self.current_time()))
+        b1.clicked.connect(lambda: self.t_start.setValue(self.current_time() - self.clip_in))
         b2 = QPushButton("Set out")
         b2.setObjectName("ghost")
         b2.setToolTip("End the reel at the playhead")
-        b2.clicked.connect(lambda: self.t_end.setValue(self.current_time()))
-        self.trim_widgets = [self.t_start, self.t_end, b1, b2]
+        b2.clicked.connect(lambda: self.t_end.setValue(self.current_time() - self.clip_in))
+        self.trim_widgets = [self.t_start, self.t_end, b1, b2, self.cut_btn, self.restore_btn]
         bottom.addWidget(label("In", "muted"))
         bottom.addWidget(self.t_start)
         bottom.addWidget(b1)
@@ -1535,6 +1560,7 @@ class ReelMaker(QMainWindow):
         self.len_label = QLabel("Length 0:00.00")
         self.len_label.setObjectName("mono")
         bottom.addWidget(self.len_label)
+
         bottom.addStretch(1)
         self.mute = QCheckBox("Mute")
         self.mute.toggled.connect(lambda m: self.audio.setMuted(m))
@@ -1964,6 +1990,8 @@ class ReelMaker(QMainWindow):
         self.timeline.trim_enabled = i != 2
         for w_ in self.trim_widgets:
             w_.setEnabled(i != 2)
+        self.restore_btn.setVisible(i != 2 and (self.clip_in > 0.01 or self.clip_out < self.duration - 0.01))
+        self.update_trim_labels()
         if i == 2:
             self.player.pause()
             if self.cover_src_seg.value() == 0 and self.frame is not None:
@@ -2156,7 +2184,7 @@ class ReelMaker(QMainWindow):
         self.cover_frame = self.frame.copy()
         self.cover_frame_t = self.current_time()
         if self.cover_src_seg.value() == 0:
-            self.cover_info.setText(f"Frame at {fmt_time(self.cover_frame_t)}")
+            self.cover_info.setText(f"Frame at {fmt_time(self.cover_frame_t - self.clip_in)}")
         self.cover_timer.start()
 
     def on_frame(self, vf):
@@ -2219,7 +2247,8 @@ class ReelMaker(QMainWindow):
         return None if img.isNull() else img
 
     def fb_show_frame(self, first=False):
-        img = self.fb_frame_at(min(self.fb_pos, max(0.0, self.duration - 0.05)))
+        self.fb_pos = min(max(self.fb_pos, self.clip_in), max(self.clip_in, self.clip_out - 0.05))
+        img = self.fb_frame_at(self.fb_pos)
         if img is None:
             return
         if first:
@@ -2239,31 +2268,51 @@ class ReelMaker(QMainWindow):
             self.player.setPosition(int(t * 1000))
 
     def set_playhead(self, t):
-        self.timeline.pos = t
+        """t is absolute (seconds into the source); the timeline shows it relative to the clip."""
+        rel = t - self.clip_in
+        self.timeline.pos = rel
         self.timeline.update()
-        self.time_label.setText(fmt_time(t))
+        self.time_label.setText(fmt_time(rel))
+
+    # absolute start/end of what will be exported
+    def abs_start(self):
+        return self.clip_in + self.t_start.value()
+
+    def abs_end(self):
+        return self.clip_in + self.t_end.value()
 
     def on_duration(self, ms):
         self.duration = ms / 1000
-        self.timeline.duration = self.duration
+        self.clip_in, self.clip_out = 0.0, self.duration
+        self.apply_clip(0.0, self.duration)
+
+    def apply_clip(self, keep_s, keep_e):
+        """Show clip_in..clip_out on the timeline, with the trim handles at keep_s..keep_e (relative)."""
+        L = max(0.0, self.clip_out - self.clip_in)
+        self.timeline.duration = L
         for sb in (self.t_start, self.t_end):
             sb.blockSignals(True)
-            sb.setMaximum(self.duration)
-        self.t_start.setValue(0)
-        self.t_end.setValue(self.duration)
+            sb.setMaximum(L)
+        self.t_start.setValue(max(0.0, min(keep_s, L)))
+        self.t_end.setValue(max(0.0, min(keep_e, L)))
         for sb in (self.t_start, self.t_end):
             sb.blockSignals(False)
-        self.timeline.start, self.timeline.end = 0, self.duration
-        self.dur_label.setText(fmt_time(self.duration))
-        self.set_playhead(0)
+        self.timeline.start, self.timeline.end = self.t_start.value(), self.t_end.value()
+        self.dur_label.setText(fmt_time(L))
+        clipped = self.clip_in > 0.01 or self.clip_out < self.duration - 0.01
+        self.restore_btn.setVisible(clipped and self.tabs.currentIndex() != 2)
         self.update_trim_labels()
+        self.seek_to(self.abs_start())
+        self.set_playhead(self.abs_start())
 
     def on_position(self, ms):
         t = ms / 1000
-        if (self.player.playbackState() == QMediaPlayer.PlayingState and not self._priming
-                and self.tabs.currentIndex() != 2 and t >= self.t_end.value() - 0.02):
-            self.player.setPosition(int(self.t_start.value() * 1000))
-            return
+        if self.player.playbackState() == QMediaPlayer.PlayingState and not self._priming:
+            lo, hi = ((self.clip_in, self.clip_out) if self.tabs.currentIndex() == 2
+                      else (self.abs_start(), self.abs_end()))
+            if t >= hi - 0.02 or t < lo - 0.25:
+                self.player.setPosition(int(lo * 1000))
+                return
         self.set_playhead(t)
 
     def on_state(self, st):
@@ -2280,8 +2329,10 @@ class ReelMaker(QMainWindow):
             self.player.pause()
         else:
             t = self.player.position() / 1000
-            if self.tabs.currentIndex() != 2 and (t < self.t_start.value() or t >= self.t_end.value() - 0.05):
-                self.player.setPosition(int(self.t_start.value() * 1000))
+            lo, hi = ((self.clip_in, self.clip_out) if self.tabs.currentIndex() == 2
+                      else (self.abs_start(), self.abs_end()))
+            if t < lo or t >= hi - 0.05:
+                self.player.setPosition(int(lo * 1000))
             self.player.play()
 
     def on_timeline_trim(self, s, e):
@@ -2300,7 +2351,7 @@ class ReelMaker(QMainWindow):
                 self.t_start.setValue(s)
                 self.t_start.blockSignals(False)
             else:
-                e = min(self.duration, s + 0.1)
+                e = min(self.clip_out - self.clip_in, s + 0.1)
                 self.t_end.blockSignals(True)
                 self.t_end.setValue(e)
                 self.t_end.blockSignals(False)
@@ -2311,6 +2362,30 @@ class ReelMaker(QMainWindow):
     def update_trim_labels(self):
         L = self.t_end.value() - self.t_start.value()
         self.len_label.setText(f"Length {fmt_time(L)}" + ("  · over 3:00" if L > 180 else ""))
+        span = self.clip_out - self.clip_in
+        trimmed = span > 0 and (self.t_start.value() > 0.01 or self.t_end.value() < span - 0.01)
+        if hasattr(self, "cut_btn"):
+            self.cut_btn.setVisible(trimmed and (not hasattr(self, "tabs") or self.tabs.currentIndex() != 2))
+
+    def delete_trimmed(self):
+        """Drop everything outside the trim handles from the timeline (the source file is untouched)."""
+        if not self.src_path:
+            return
+        new_in, new_out = self.abs_start(), self.abs_end()
+        if new_out - new_in < 0.1:
+            return
+        self.player.pause()
+        self.clip_in, self.clip_out = new_in, new_out
+        self.apply_clip(0.0, new_out - new_in)
+        self.status(f"Deleted the trimmed parts. The timeline is now {fmt_time(new_out - new_in)} long. "
+                    "“Restore full clip” brings them back.")
+
+    def restore_clip(self):
+        keep_s, keep_e = self.abs_start(), self.abs_end()
+        self.player.pause()
+        self.clip_in, self.clip_out = 0.0, self.duration
+        self.apply_clip(keep_s, keep_e)   # handles still mark the part you kept
+        self.status("Restored the full clip. Your trim handles still mark the part you kept.")
 
     # ============================================================ zone & placement
     def apply_preset(self):
@@ -2903,8 +2978,8 @@ class ReelMaker(QMainWindow):
 
     # ============================================================ export
     def build_ffmpeg_args(self, out_path):
-        start = self.t_start.value()
-        dur = max(0.1, self.t_end.value() - start)
+        start = self.abs_start()
+        dur = max(0.1, self.abs_end() - start)
         r = self.video_rect(self.src_ar)
         vw = max(2, int(round(r.width() / 2)) * 2)
         vh = max(2, int(round(r.height() / 2)) * 2)
