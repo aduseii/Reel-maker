@@ -262,6 +262,17 @@ def icon(kind, color=C["text"], size=20):
         p.drawRoundedRect(QRectF(7, 3.5, 10, 17), 2.5, 2.5)
         p.drawLine(QPointF(9.5, 8), QPointF(14.5, 8))
         p.drawLine(QPointF(9.5, 15.5), QPointF(14.5, 15.5))
+    elif kind == "sit":
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(5, 3.5, 14, 6.5), 1.5, 1.5)
+        p.drawLine(QPointF(12, 11.5), QPointF(12, 15))
+        path = QPainterPath()
+        path.moveTo(9.5, 12.8)
+        path.lineTo(12, 15.3)
+        path.lineTo(14.5, 12.8)
+        p.drawPath(path)
+        p.drawLine(QPointF(4, 18.5), QPointF(20, 18.5))
     elif kind == "cut":
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
@@ -1059,6 +1070,7 @@ class Canvas(QWidget):
         alt = bool(e.modifiers() & Qt.AltModifier)
         if kind == "move":
             _, ov, ox, oy = self.drag
+            a.detach(ov)
             ov.x, ov.y = pt.x() - ox, pt.y() - oy
             a.clamp_layer(ov)
             r = ov.rect()
@@ -1671,13 +1683,6 @@ class ReelMaker(QMainWindow):
         self.clamp.toggled.connect(lambda *_: self.after_zone())
         pg.add(self.clamp)
 
-        self.stack = QStackedWidget()
-        empty = label("Select a layer to edit it.", "faint")
-        empty.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.stack.addWidget(empty)
-        self.stack.addWidget(self.image_controls())
-        self.stack.addWidget(self.text_controls())
-        pg.add(self.stack)
 
         self.common_box = QWidget()
         cv = QVBoxLayout(self.common_box)
@@ -1693,6 +1698,20 @@ class ReelMaker(QMainWindow):
             b.setToolTip(n + " of the safe zone")
         self.snap_seg.changed.connect(lambda i: self.place_layer(keys[i]))
         cv.addWidget(field("Snap to", self.snap_seg))
+        self.sit_btn = QPushButton(" Sit on video")
+        self.sit_btn.setIcon(icon("sit", C["text"], 16))
+        self.sit_btn.setCheckable(True)
+        self.sit_btn.setCursor(Qt.PointingHandCursor)
+        self.sit_btn.setToolTip("Move this layer down (or up) until it sits just above the video, and keep it "
+                                "there when the text or the video changes. Drag it to detach.")
+        self.sit_btn.setStyleSheet(f"QPushButton:checked{{background:rgba(242,179,27,0.14);"
+                                   f"border-color:rgba(242,179,27,0.45);color:{C['accent']}}}")
+        self.sit_btn.clicked.connect(self.toggle_sit_on_video)
+        self.sit_gap = spin(0, 300, self.settings.value("sit_gap", 16, type=int), " px", 2)
+        self.sit_gap.setToolTip("Space between the layer and the top of the video")
+        self.sit_gap.setFixedWidth(76)
+        self.sit_gap.valueChanged.connect(self.on_sit_gap)
+        cv.addWidget(field("Video", row(self.sit_btn, label("Gap", "faint"), self.sit_gap, None)))
         self.dup_btn = QPushButton("Duplicate")
         self.dup_btn.clicked.connect(self.duplicate_layer)
         self.fwd_btn = QPushButton("Bring forward")
@@ -1702,6 +1721,13 @@ class ReelMaker(QMainWindow):
         cv.addWidget(row(self.dup_btn, self.fwd_btn, self.rm_btn, None))
         self.common_box.setEnabled(False)
         pg.add(self.common_box)
+        self.stack = QStackedWidget()
+        empty = label("Select a layer to edit it.", "faint")
+        empty.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.stack.addWidget(empty)
+        self.stack.addWidget(self.image_controls())
+        self.stack.addWidget(self.text_controls())
+        pg.add(self.stack)
         pg.finish()
         return pg
 
@@ -1938,6 +1964,7 @@ class ReelMaker(QMainWindow):
         self.statusBar().showMessage(msg)
 
     def changed(self):
+        self.reapply_attachments()
         ed = self.canvas.editor
         if ed and not ed.hasFocus():
             if ed.toPlainText() != ed.layer.text:
@@ -2514,6 +2541,12 @@ class ReelMaker(QMainWindow):
         self._syncing = True
         try:
             self.ly_op.setValue(int(o.opacity * 100))
+            gap = getattr(o, "attach_gap", None)
+            self.sit_btn.setChecked(gap is not None)
+            if gap is not None:
+                self.sit_gap.blockSignals(True)
+                self.sit_gap.setValue(int(round(gap)))
+                self.sit_gap.blockSignals(False)
             if o.kind == "image":
                 self.img_size.setValue(int(o.w))
             else:
@@ -2592,6 +2625,9 @@ class ReelMaker(QMainWindow):
         left = min(max(r.left(), z.left()), z.right() - r.width())
         top = min(max(r.top(), z.top()), max(z.top(), z.bottom() - r.height()))
         o.move_to(left, top)
+        if getattr(o, "attach_gap", None) is not None:   # attached layers keep their place on the video
+            self.sit_on_video(o, o.attach_gap)
+
 
     def place_layer(self, key, o=None):
         o = o or self.selected()
@@ -2602,12 +2638,51 @@ class ReelMaker(QMainWindow):
         r = o.rect()
         xs = {"l": z.left() + m, "c": z.center().x() - r.width() / 2, "r": z.right() - m - r.width()}
         ys = {"t": z.top() + m, "c": z.center().y() - r.height() / 2, "b": z.bottom() - m - r.height()}
+        self.detach(o)
         if key == "c":
             o.move_to(xs["c"], ys["c"])
         else:
             o.move_to(xs[key[1]], ys[key[0]])
         self.clamp_layer(o)
         self.layer_changed()
+
+    # ---- "Sit on video": bottom edge a fixed gap above the top of the video
+    def sit_on_video(self, o, gap):
+        r = o.rect()
+        top = self.video_rect().top() - gap - r.height()
+        o.move_to(r.left(), top)
+
+    def reapply_attachments(self):
+        for o in self.layers:
+            gap = getattr(o, "attach_gap", None)
+            if gap is not None:
+                self.sit_on_video(o, gap)
+
+    def toggle_sit_on_video(self, on):
+        o = self.selected()
+        if not o or self.locked:
+            self.sit_btn.setChecked(False)
+            return
+        if on:
+            o.attach_gap = float(self.sit_gap.value())
+            self.status("The layer now sits on the video and stays there as the text or video changes. "
+                        "Drag it to detach.")
+        else:
+            o.attach_gap = None
+        self.layer_changed()
+
+    def on_sit_gap(self, v):
+        self.settings.setValue("sit_gap", v)
+        o = self.selected()
+        if o and getattr(o, "attach_gap", None) is not None and not self.locked:
+            o.attach_gap = float(v)
+            self.changed()
+
+    def detach(self, o):
+        if getattr(o, "attach_gap", None) is not None:
+            o.attach_gap = None
+            if o is self.selected():
+                self.sit_btn.setChecked(False)
 
     def duplicate_layer(self):
         o = self.selected()
@@ -3459,6 +3534,8 @@ class ReelMaker(QMainWindow):
         o = self.selected()
         if o and not self.locked and e.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
             step = 20 if e.modifiers() & Qt.ShiftModifier else 2
+            if e.key() in (Qt.Key_Up, Qt.Key_Down):
+                self.detach(o)
             o.x += {Qt.Key_Left: -step, Qt.Key_Right: step}.get(e.key(), 0)
             o.y += {Qt.Key_Up: -step, Qt.Key_Down: step}.get(e.key(), 0)
             self.clamp_layer(o)

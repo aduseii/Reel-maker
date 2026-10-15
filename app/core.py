@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.9.1"
+__version__ = "1.10.0"
 
 import os
 import re
@@ -351,6 +351,7 @@ class ImageLayer:
         self.x = W / 2
         self.y = H / 2
         self.opacity = 1.0
+        self.attach_gap = None    # set = sits this many px above the video and follows it
 
     def move_to(self, left, top):
         self.x = left + self.w / 2
@@ -361,7 +362,8 @@ class ImageLayer:
         buf.open(QIODevice.WriteOnly)
         self.img.save(buf, "PNG")
         return {"kind": "image", "name": self.name, "w": self.w, "x": self.x, "y": self.y,
-                "opacity": self.opacity, "png": base64.b64encode(bytes(buf.data())).decode()}
+                "opacity": self.opacity, "attach_gap": self.attach_gap,
+                "png": base64.b64encode(bytes(buf.data())).decode()}
 
     @classmethod
     def from_dict(cls, d):
@@ -369,6 +371,7 @@ class ImageLayer:
         img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
         o = cls(img, d.get("name", "image.png"))
         o.w, o.x, o.y, o.opacity = d["w"], d["x"], d["y"], d.get("opacity", 1.0)
+        o.attach_gap = d.get("attach_gap")
         return o
 
     @property
@@ -393,7 +396,7 @@ class TextLayer:
     (x, y) is the centre of the top edge, so extra lines grow downward."""
     kind = "text"
     FIELDS = ("text", "family", "weight", "size", "align", "style", "box_alpha", "radius", "pad",
-              "spacing", "shadow", "opacity", "w", "x", "y")
+              "spacing", "shadow", "opacity", "w", "x", "y", "attach_gap")
 
     def __init__(self, text="Your text here"):
         self.text = text
@@ -410,6 +413,7 @@ class TextLayer:
         self.spacing = 1.18
         self.shadow = False
         self.opacity = 1.0
+        self.attach_gap = None
         self.w = 760.0
         self.x = W / 2
         self.y = H / 2
