@@ -262,6 +262,14 @@ def icon(kind, color=C["text"], size=20):
         p.drawRoundedRect(QRectF(7, 3.5, 10, 17), 2.5, 2.5)
         p.drawLine(QPointF(9.5, 8), QPointF(14.5, 8))
         p.drawLine(QPointF(9.5, 15.5), QPointF(14.5, 15.5))
+    elif kind == "insta":
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(4, 4, 16, 16), 4.5, 4.5)
+        p.drawEllipse(QPointF(12, 12), 3.6, 3.6)
+        p.setPen(Qt.NoPen)
+        p.setBrush(col)
+        p.drawEllipse(QPointF(16.6, 7.4), 1.1, 1.1)
     elif kind == "sit":
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
@@ -1953,7 +1961,17 @@ class ReelMaker(QMainWindow):
         self.show_out_btn.setIcon(icon("folder", C["text"], 16))
         self.show_out_btn.setCursor(Qt.PointingHandCursor)
         self.show_out_btn.clicked.connect(self.show_export_in_folder)
-        self.done_row = row(self.play_out_btn, self.show_out_btn, None)
+        self.ig_btn = QPushButton(" Post to Instagram")
+        self.ig_btn.setIcon(icon("insta", C["text"], 16))
+        self.ig_btn.setCursor(Qt.PointingHandCursor)
+        self.ig_btn.setToolTip("Open Instagram in your browser and your reel's folder, ready to drag in")
+        self.ig_btn.clicked.connect(self.post_to_instagram)
+        self.done_row = QWidget()
+        dv = QVBoxLayout(self.done_row)
+        dv.setContentsMargins(0, 0, 0, 0)
+        dv.setSpacing(8)
+        dv.addWidget(row(self.play_out_btn, self.show_out_btn, None))
+        dv.addWidget(row(self.ig_btn, None))
         self.done_row.hide()
         pg.add(self.done_row)
         pg.finish()
@@ -3196,6 +3214,22 @@ class ReelMaker(QMainWindow):
             subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
         else:
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
+
+    def post_to_instagram(self):
+        path = getattr(self, "last_export", None)
+        if not path or not os.path.exists(path):
+            self.status("Export a reel first.")
+            return
+        QDesktopServices.openUrl(QUrl("https://www.instagram.com/"))
+        self.show_export_in_folder()
+        cover = os.path.splitext(path)[0] + "_cover.png"
+        tip = (f"Instagram is opening in your browser and your reel is selected in File Explorer.\n\n"
+               f"1. In Instagram, click Create (+), then Post.\n"
+               f"2. Drag {os.path.basename(path)} into the window.\n"
+               f"3. Choose the 9:16 crop (original), then Next.")
+        if os.path.exists(cover):
+            tip += f"\n4. Under Cover photo, choose Select from computer and pick {os.path.basename(cover)}."
+        QMessageBox.information(self, "Post to Instagram", tip)
 
     def start_export(self, out, ff):
         args, self.export_dur = self.build_ffmpeg_args(out)
