@@ -1748,6 +1748,11 @@ class ReelMaker(QMainWindow):
         self.img_size = spin(30, 2000, 240, " px", 10)
         self.img_size.valueChanged.connect(self.on_layer_controls)
         v.addWidget(field("Width", self.img_size))
+        self.lowres_note = label("", "faint")
+        self.lowres_note.setWordWrap(True)
+        self.lowres_note.setStyleSheet(f"color:{C['accent']}")
+        self.lowres_note.hide()
+        v.addWidget(self.lowres_note)
         self.replace_btn = QPushButton("Replace image…")
         self.replace_btn.setToolTip("Swap the picture but keep its exact size and position")
         self.replace_btn.clicked.connect(self.replace_image)
@@ -2512,6 +2517,7 @@ class ReelMaker(QMainWindow):
         o.img, o.name = img, os.path.basename(path)
         o.x, o.y = cx, cy   # keep centre and width; height follows the new picture
         self.refresh_list()
+        self.update_lowres_note(o)
         self.changed()
 
     def add_text(self):
@@ -2567,6 +2573,7 @@ class ReelMaker(QMainWindow):
                 self.sit_gap.blockSignals(False)
             if o.kind == "image":
                 self.img_size.setValue(int(o.w))
+                self.update_lowres_note(o)
             else:
                 if self.txt_edit.toPlainText() != o.text:
                     self.txt_edit.setPlainText(o.text)
@@ -2604,6 +2611,7 @@ class ReelMaker(QMainWindow):
         o.opacity = self.ly_op.value() / 100
         if o.kind == "image":
             o.w = float(self.img_size.value())
+            self.update_lowres_note(o)
         else:
             o.family = self.txt_font.currentFont().family()
             o.weight = WEIGHTS[self.txt_weight.currentIndex()][1]
@@ -2619,6 +2627,16 @@ class ReelMaker(QMainWindow):
             self.txt_pad.setEnabled(o.style == "box")
         self.clamp_layer(o)
         self.changed()
+
+    def update_lowres_note(self, o):
+        # shown larger than the file's real pixels = soft edges no export setting can fix
+        if o.w > o.img.width() * 1.1:
+            self.lowres_note.setText(f"This image is only {o.img.width()} px wide but is shown {int(o.w)} px wide, "
+                                     "so it will look soft. Use a bigger file (at least "
+                                     f"{int(o.w)} px wide) with Replace image… for crisp edges.")
+            self.lowres_note.show()
+        else:
+            self.lowres_note.hide()
 
     def set_layer_attr(self, attr, value):
         o = self.selected()
@@ -3093,49 +3111,85 @@ class ReelMaker(QMainWindow):
                 "-loop", "1", "-t", f"{dur:.3f}", "-i", ov_png]
         fc = []
         mode = self.bg_mode()
+        m = self.source_matrix()
+        # Everything is composited at full colour resolution (4:4:4) and converted to 4:2:0 only once,
+        # at the very end, with BT.709 colours (what phones and Instagram assume for HD).
+        # Mixing straight into 4:2:0 halved the colour detail of text and logos and shifted colours.
+        to444 = (f"in_color_matrix={m}:in_range=auto:out_color_matrix=bt709:out_range=tv:"
+                 "flags=lanczos+accurate_rnd+full_chroma_int")
+        rgb_to444 = "out_color_matrix=bt709:out_range=tv:flags=accurate_rnd+full_chroma_int"
         # The background is made from the video's own frames, so both start on the very same
         # frame. (A separately generated background started before the trimmed video's first
         # frame arrived, which showed up as a blank frame at the start of the reel.)
         fc.append("[0:v]setpts=PTS-STARTPTS,split=2[src][bgsrc]")
         if mode == "blur":
-            fc.append(f"[bgsrc]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-                      f"boxblur=luma_radius=40:luma_power=2,eq=brightness=-0.12,setsar=1[bg]")
+            fc.append(f"[bgsrc]scale={W}:{H}:force_original_aspect_ratio=increase:{to444},format=yuv444p,"
+                      f"crop={W}:{H},boxblur=luma_radius=40:luma_power=2,eq=brightness=-0.12,setsar=1[bg]")
         else:
             c = {"black": "000000", "white": "FFFFFF"}.get(mode, self.bg_color.name()[1:])
-            fc.append(f"[bgsrc]scale={W}:{H},setsar=1,format=yuv420p,"
-                      f"drawbox=x=0:y=0:w=iw:h=ih:color=0x{c}@1:t=fill[bg]")
-        vin = "[src]"
-        fc.append(f"{vin}scale={vw}:{vh}:flags=lanczos,setsar=1[v]")
+            # only the timing of these frames is used (they're painted over), so scale them the fast way
+            fc.append(f"[bgsrc]scale={W}:{H}:flags=neighbor,format=rgb24,setsar=1,"
+                      f"drawbox=x=0:y=0:w=iw:h=ih:color=0x{c}@1:t=fill,scale={rgb_to444},format=yuv444p[bg]")
+        fc.append(f"[src]scale={vw}:{vh}:{to444},format=yuv444p,setsar=1[v]")
         vlabel = "[v]"
         rad = self.radius.value()
         if rad > 0:
             mask = os.path.join(self.tmpdir, "mask.png")
-            m = QImage(vw, vh, QImage.Format_Grayscale8)
-            m.fill(Qt.black)
-            mp = QPainter(m)
+            mk = QImage(vw, vh, QImage.Format_Grayscale8)
+            mk.fill(Qt.black)
+            mp = QPainter(mk)
             mp.setRenderHint(QPainter.Antialiasing)
             mp.setPen(Qt.NoPen)
             mp.setBrush(Qt.white)
             k = vw / max(1, r.width())
             mp.drawRoundedRect(QRectF(0, 0, vw, vh), rad * k, rad * k)
             mp.end()
-            m.save(mask, "PNG")
+            mk.save(mask, "PNG")
             args += ["-loop", "1", "-t", f"{dur:.3f}", "-i", mask]
-            fc.append("[v]format=rgba[va]")
-            fc.append("[2:v]format=gray[m]")
-            fc.append("[va][m]alphamerge[vr]")
+            fc.append("[v]format=yuva444p[va]")
+            fc.append("[2:v]format=gray[mk]")
+            fc.append("[va][mk]alphamerge[vr]")
             vlabel = "[vr]"
+        fc.append(f"[1:v]format=rgba,scale={rgb_to444},format=yuva444p[ov]")
         fps = {0: "30", 1: "60"}.get(self.fps.value())
-        tail = f",fps={fps}" if fps else ""
-        fc.append(f"[bg]{vlabel}overlay=x={x}:y={y}:shortest=1:eof_action=endall[b1]")
-        fc.append(f"[b1][1:v]overlay=0:0:shortest=1{tail},format=yuv420p[out]")
-        crf = {0: "18", 1: "21", 2: "25"}.get(self.quality.value(), "18")
+        tail = f"fps={fps}," if fps else ""
+        fc.append(f"[bg]{vlabel}overlay=x={x}:y={y}:shortest=1:eof_action=endall:format=yuv444[b1]")
+        fc.append(f"[b1][ov]overlay=0:0:shortest=1:format=yuv444,{tail}"
+                  "scale=flags=lanczos+accurate_rnd+full_chroma_int,format=yuv420p[out]")
+        q = self.quality.value()
+        crf = {0: "16", 1: "19", 2: "23"}.get(q, "16")
+        rate = fps or "30"
         args += ["-filter_complex", ";".join(fc), "-map", "[out]", "-map", "0:a?", "-af", "asetpts=PTS-STARTPTS",
-                 "-c:v", "libx264", "-preset", "medium", "-crf", crf, "-profile:v", "high",
-                 "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                 "-c:v", "libx264", "-preset", "slow" if q < 2 else "medium", "-crf", crf,
+                 "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p",
+                 # keep edges of text crisp, spend bits on flat areas sensibly, regular keyframes
+                 "-x264-params", f"deblock=-1,-1:aq-mode=3:keyint={int(float(rate)) * 2}:min-keyint={int(float(rate))}",
+                 "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
+                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
                  "-t", f"{dur:.3f}", "-movflags", "+faststart",
                  "-progress", "pipe:1", "-nostats", out_path]
         return args, dur
+
+    def source_matrix(self):
+        """Colour matrix of the source video: what it's tagged with, else BT.709 for HD and BT.601 for SD."""
+        cached = getattr(self, "_matrix", None)
+        if cached and cached[0] == self.src_path:
+            return cached[1]
+        m = None
+        r = self.run_ffmpeg(["-i", self.src_path], timeout=15)
+        if r is not None:
+            info = r.stderr.decode(errors="ignore")
+            line = next((l for l in info.splitlines() if "Video:" in l), "")
+            if "bt709" in line:
+                m = "bt709"
+            elif any(k in line for k in ("smpte170m", "bt470bg", "bt601")):
+                m = "bt601"
+            elif "bt2020" in line:
+                m = "bt2020"
+        if m is None:
+            m = "bt709" if (self.frame is None or self.frame.height() >= 600) else "bt601"
+        self._matrix = (self.src_path, m)
+        return m
 
     def export(self):
         if not self.src_path:

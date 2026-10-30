@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.11.0"
+__version__ = "1.12.0"
 
 import os
 import re
@@ -336,6 +336,36 @@ EMOJI = EmojiSet()
 
 
 # ---------------------------------------------------------------- layers
+# ---------------------------------------------------------------- crisp image scaling
+_HQ_CACHE = {}
+
+
+def draw_image_hq(p, rect, img):
+    """Draw img into rect, shrinking it with an area-averaging filter first.
+    QPainter's own smooth scaling is bilinear, which skips detail when shrinking a lot
+    (a 2000 px logo drawn at 220 px), giving jagged, "chopped" edges."""
+    t = p.worldTransform()
+    if t.m12() or t.m21():                      # rotated/sheared: let Qt handle it
+        p.drawImage(rect, img)
+        return
+    dev = t.mapRect(rect)
+    tw, th = max(1, round(dev.width())), max(1, round(dev.height()))
+    if tw >= img.width() and th >= img.height():
+        p.drawImage(rect, img)                  # enlarging: nothing to gain
+        return
+    key = (img.cacheKey(), tw, th)
+    small = _HQ_CACHE.get(key)
+    if small is None:
+        small = img.scaled(tw, th, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        if len(_HQ_CACHE) > 600:
+            _HQ_CACHE.clear()
+        _HQ_CACHE[key] = small
+    p.save()
+    p.resetTransform()
+    p.drawImage(QRectF(dev.x(), dev.y(), tw, th), small)
+    p.restore()
+
+
 def color_hex(c):
     return c.name(QColor.HexArgb)
 
@@ -387,7 +417,7 @@ class ImageLayer:
     def draw(self, p):
         p.save()
         p.setOpacity(self.opacity)
-        p.drawImage(self.rect(), self.img)
+        draw_image_hq(p, self.rect(), self.img)
         p.restore()
 
 
@@ -602,7 +632,7 @@ class TextLayer:
                         es = self.size * 1.02
                         ey = top + i * lh + (lh - es) / 2
                         if img is not None:
-                            p.drawImage(QRectF(x + (t[2] - es) / 2, ey, es, es), img)
+                            draw_image_hq(p, QRectF(x + (t[2] - es) / 2, ey, es, es), img)
                         else:
                             p.setFont(efont)
                             p.setPen(color)
