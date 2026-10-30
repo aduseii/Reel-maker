@@ -10,7 +10,7 @@ A Windows desktop app that turns a 16:9 video into a 1080 × 1920 Instagram Reel
 - **Sit on video:** one click puts a text box, logo or photo a set gap above the video and keeps it there as the words or the video change
 - **Alignment guides:** pink lines and snapping when anything lines up with the centre, the safe zone, the video or another layer (hold Alt to move freely)
 - **Templates:** save a layout once, and every new video uses it locked in place. Only the words and images change. Sign in with GitHub to keep them in the cloud and use them on any PC.
-- **Cover editor:** frame a 9:16 window over the full 16:9 picture, add a title and save a PNG
+- **Cover editor:** frame a 9:16 window over the full 16:9 picture, add a title and save a PNG. The cover is built into the reel as its first frame (so Instagram uses it as the cover automatically) and stored as the MP4's thumbnail
 - **Export:** H.264 MP4 with AAC audio, ready for Instagram: text and logos are mixed in at full colour detail with high-quality scaling and correct BT.709 colours, so they stay crisp after Instagram re-compresses them, with **Play video**, **Show in folder** and **Post to Instagram** (opens Instagram and selects the reel so you can drag it in) when it finishes
 - **Built-in updates:** one click installs the newest release
 

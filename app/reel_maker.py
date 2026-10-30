@@ -1938,7 +1938,20 @@ class ReelMaker(QMainWindow):
         pg.add(field("Quality", self.quality))
         self.fps = Segmented(["30 fps", "60 fps", "Source"])
         pg.add(field("Frame rate", self.fps))
-        self.save_cover_too = QCheckBox("Also save the cover next to the video")
+        pg.section("Cover in the video")
+        self.cover_first = QCheckBox("Start the reel with the cover")
+        self.cover_first.setChecked(True)
+        self.cover_first.setToolTip("Adds your cover as the very first frame (1/30 of a second). Instagram uses the "
+                                    "first frame as the cover unless you pick another, so it's chosen automatically.")
+        pg.add(self.cover_first)
+        pg.add(label("Instagram picks it as the cover automatically. It shows for one frame, too short to notice.",
+                     "faint")).setWordWrap(True)
+        self.cover_embed = QCheckBox("Use the cover as the file's thumbnail")
+        self.cover_embed.setChecked(True)
+        self.cover_embed.setToolTip("Stores the cover inside the MP4 as its picture, shown by video players and "
+                                    "file browsers that support it. Instagram doesn't use this.")
+        pg.add(self.cover_embed)
+        self.save_cover_too = QCheckBox("Also save the cover as a PNG next to the video")
         self.save_cover_too.setChecked(True)
         pg.add(self.save_cover_too)
         pg.lay.addSpacing(6)
@@ -2192,6 +2205,19 @@ class ReelMaker(QMainWindow):
 
     def load_video(self, path):
         self.src_path = path
+        self._clip_src = None          # the timeline/trim must be reset for this video
+        # clear the previous video's timeline straight away; the new length arrives once it loads
+        self.duration = self.clip_in = self.clip_out = 0.0
+        self.timeline.duration = 0.0
+        for sb in (self.t_start, self.t_end):
+            sb.blockSignals(True)
+            sb.setValue(0.0)
+            sb.blockSignals(False)
+        self.timeline.start = self.timeline.end = 0.0
+        self.restore_btn.hide()
+        self.cut_btn.hide()
+        self.dur_label.setText(fmt_time(0))
+        self.set_playhead(0)
         self.frame = None
         self.cover_frame = None
         self.fallback = False
@@ -2202,6 +2228,8 @@ class ReelMaker(QMainWindow):
         self.file_label.style().polish(self.file_label)
         self._priming = True
         self.audio.setMuted(True)
+        self.player.stop()
+        self.player.setSource(QUrl())            # the player ignores being given the file it already has
         self.player.setSource(QUrl.fromLocalFile(path))
         self.status("Loading video…")
         self.load_timer.start()
@@ -2248,6 +2276,9 @@ class ReelMaker(QMainWindow):
             self.load_timer.stop()
             self.player.pause()
             self.player.setPosition(0)
+            if getattr(self, "_clip_src", None) != self.src_path and self.player.duration() > 0:
+                # the player doesn't re-announce a duration equal to the last video's
+                self.on_duration(self.player.duration())
             self.audio.setMuted(self.mute.isChecked())
             ar = img.width() / img.height()
             note = "" if abs(ar - 16 / 9) < 0.05 else f" (this video is {ar:.2f}:1, not 16:9)"
@@ -2332,6 +2363,7 @@ class ReelMaker(QMainWindow):
         return self.clip_in + self.t_end.value()
 
     def on_duration(self, ms):
+        self._clip_src = self.src_path
         self.duration = ms / 1000
         self.clip_in, self.clip_out = 0.0, self.duration
         self.apply_clip(0.0, self.duration)
@@ -2768,7 +2800,8 @@ class ReelMaker(QMainWindow):
                       "include_layers": self.cover_ovs.isChecked(), "zoom": self.cover_zoom.value(),
                       "grid": self.cover_grid.isChecked()},
             "export": {"quality": self.quality.value(), "fps": self.fps.value(),
-                       "save_cover": self.save_cover_too.isChecked()},
+                       "save_cover": self.save_cover_too.isChecked(),
+                       "cover_first": self.cover_first.isChecked(), "cover_embed": self.cover_embed.isChecked()},
         }
 
     @staticmethod
@@ -2903,6 +2936,8 @@ class ReelMaker(QMainWindow):
         self.quality.setValue(ex.get("quality", 0))
         self.fps.setValue(ex.get("fps", 0))
         self.save_cover_too.setChecked(ex.get("save_cover", True))
+        self.cover_first.setChecked(ex.get("cover_first", True))
+        self.cover_embed.setChecked(ex.get("cover_embed", True))
         self.template_name = d.get("name") or os.path.splitext(os.path.basename(path))[0]
         self.settings.setValue("last_template", path)
         self.sel = -1
@@ -3107,8 +3142,10 @@ class ReelMaker(QMainWindow):
         p.end()
         img.save(ov_png, "PNG")
 
-        args = ["-y", "-hide_banner", "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", self.src_path,
-                "-loop", "1", "-t", f"{dur:.3f}", "-i", ov_png]
+        # read a little past the out point: frame-rate conversion would otherwise drop the last
+        # frames, leaving the picture shorter than the sound; the output is cut to the exact length
+        args = ["-y", "-hide_banner", "-ss", f"{start:.3f}", "-t", f"{dur + 0.25:.3f}", "-i", self.src_path,
+                "-loop", "1", "-framerate", str(self.source_info()["fps"]), "-t", f"{dur + 0.25:.3f}", "-i", ov_png]
         fc = []
         mode = self.bg_mode()
         m = self.source_matrix()
@@ -3145,32 +3182,83 @@ class ReelMaker(QMainWindow):
             mp.drawRoundedRect(QRectF(0, 0, vw, vh), rad * k, rad * k)
             mp.end()
             mk.save(mask, "PNG")
-            args += ["-loop", "1", "-t", f"{dur:.3f}", "-i", mask]
+            args += ["-loop", "1", "-framerate", str(self.source_info()["fps"]), "-t", f"{dur + 0.25:.3f}", "-i", mask]
             fc.append("[v]format=yuva444p[va]")
             fc.append("[2:v]format=gray[mk]")
             fc.append("[va][mk]alphamerge[vr]")
             vlabel = "[vr]"
         fc.append(f"[1:v]format=rgba,scale={rgb_to444},format=yuva444p[ov]")
         fps = {0: "30", 1: "60"}.get(self.fps.value())
-        tail = f"fps={fps}," if fps else ""
+        rate = fps or self.source_info()["fps"]
+        tail = f"fps={rate},"
         fc.append(f"[bg]{vlabel}overlay=x={x}:y={y}:shortest=1:eof_action=endall:format=yuv444[b1]")
-        fc.append(f"[b1][ov]overlay=0:0:shortest=1:format=yuv444,{tail}"
-                  "scale=flags=lanczos+accurate_rnd+full_chroma_int,format=yuv420p[out]")
+        fc.append(f"[b1][ov]overlay=0:0:shortest=1:format=yuv444,{tail}format=yuv444p[comp]")
         q = self.quality.value()
         crf = {0: "16", 1: "19", 2: "23"}.get(q, "16")
-        rate = fps or "30"
-        args += ["-filter_complex", ";".join(fc), "-map", "[out]", "-map", "0:a?", "-af", "asetpts=PTS-STARTPTS",
-                 "-c:v", "libx264", "-preset", "slow" if q < 2 else "medium", "-crf", crf,
-                 "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p",
+        cover_img = self.render_cover() if (self.cover_first.isChecked() or self.cover_embed.isChecked()) \
+            and self.cover_source() is not None else None
+        afilter = "asetpts=PTS-STARTPTS"
+        total = dur
+        final = ("scale=flags=lanczos+accurate_rnd+full_chroma_int,format=yuv420p,setsar=1,"
+                 "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709")
+        if cover_img is not None and self.cover_first.isChecked():
+            # One extra frame goes in front of the reel and the cover is painted onto exactly that
+            # frame, so Instagram's default cover (the first frame) is your cover. Sound shifts by
+            # one frame to stay in sync.
+            cpath = os.path.join(self.tmpdir, "cover_frame.png")
+            cover_img.save(cpath, "PNG")
+            one = 1.0 / float(rate)
+            idx = args.count("-i")
+            args += ["-loop", "1", "-framerate", str(rate), "-i", cpath]
+            fc.append(f"[{idx}:v]format=rgba,scale={rgb_to444},format=yuv444p[cv]")
+            fc.append("[comp]tpad=start=1:start_mode=clone[padded]")
+            fc.append(f"[padded][cv]overlay=0:0:format=yuv444:enable='eq(n,0)',{final}[out]")
+            afilter += f",adelay={round(one * 1000)}:all=1"
+            total = dur + one
+        else:
+            fc.append(f"[comp]{final}[out]")
+        maps = ["-map", "[out]", "-map", "0:a?"]
+        thumb = []
+        if cover_img is not None and self.cover_embed.isChecked():
+            # MP4 cover art (stored as an attached picture)
+            tpath = os.path.join(self.tmpdir, "thumb.jpg")
+            cover_img.scaled(720, 1280, Qt.KeepAspectRatio, Qt.SmoothTransformation).save(tpath, "JPG", 92)
+            n_inputs = args.count("-i")
+            args += ["-i", tpath]
+            maps += ["-map", f"{n_inputs}:v"]
+            thumb = ["-c:v:1", "mjpeg", "-disposition:v:1", "attached_pic"]
+        args += ["-filter_complex", ";".join(fc)] + maps + ["-af", afilter,
+                 "-c:v:0", "libx264", "-preset", "slow" if q < 2 else "medium", "-crf", crf,
+                 "-profile:v:0", "high", "-level:v:0", "4.2", "-pix_fmt:v:0", "yuv420p",
                  # keep edges of text crisp, spend bits on flat areas sensibly, regular keyframes
                  "-x264-params", f"deblock=-1,-1:aq-mode=3:keyint={int(float(rate)) * 2}:min-keyint={int(float(rate))}",
-                 "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
-                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-                 "-t", f"{dur:.3f}", "-movflags", "+faststart",
+                 "-colorspace:v:0", "bt709", "-color_primaries:v:0", "bt709", "-color_trc:v:0", "bt709",
+                 "-color_range:v:0", "tv",
+                 ] + thumb + ["-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                 "-t", f"{total:.3f}", "-movflags", "+faststart",
                  "-progress", "pipe:1", "-nostats", out_path]
-        return args, dur
+        return args, total
 
     def source_matrix(self):
+        return self.source_info()["matrix"]
+
+    def source_info(self):
+        """Colour matrix and frame rate of the source video."""
+        cached = getattr(self, "_srcinfo", None)
+        if cached and cached[0] == self.src_path:
+            return cached[1]
+        fps = "30"
+        r = self.run_ffmpeg(["-i", self.src_path], timeout=15)
+        if r is not None:
+            line = next((l for l in r.stderr.decode(errors="ignore").splitlines() if "Video:" in l), "")
+            mm = re.search(r"([\d.]+) fps", line)
+            if mm and 1 <= float(mm.group(1)) <= 120:
+                fps = mm.group(1)
+        info = {"matrix": self._probe_matrix(), "fps": fps}
+        self._srcinfo = (self.src_path, info)
+        return info
+
+    def _probe_matrix(self):
         """Colour matrix of the source video: what it's tagged with, else BT.709 for HD and BT.601 for SD."""
         cached = getattr(self, "_matrix", None)
         if cached and cached[0] == self.src_path:
