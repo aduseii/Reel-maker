@@ -55,14 +55,19 @@ jobs:
               APPDATA="/tmp/rm", __version__="ci", find_ffmpeg=lambda: shutil.which("ffmpeg"),
               version_tuple=lambda v: tuple(int(n) for n in __import__("re").findall(r"\d+", v or "")[:4]) or (0,))
           import x_import as X
-          url = X.find_link("https://x.com/NASA/status/623160978427936768")
-          st = {}
-          try:
-              post = X.get_post(url, st)
-              path = X.download_video(post, 0, {})
-              print(f"X import OK with yt-dlp {post['version']}: {os.path.getsize(path)} bytes, caption {post['caption']!r}")
-          except Exception as e:
-              print(f"::warning::X import check failed (X may block GitHub's servers): {e} | details: {st.get('errors')}")
+          # public posts with native video, taken from yt-dlp's own tests
+          links = ["https://x.com/historyinmemes/status/1790637656616943991",
+                   "https://x.com/DavidToons_/status/1578353380363501568"]
+          for link in links:
+              st = {}
+              try:
+                  post = X.get_post(X.find_link(link), st)
+                  path = X.download_video(post, 0, {})
+                  print(f"X import OK with yt-dlp {post['version']}: {os.path.getsize(path)} bytes, caption {post['caption']!r}")
+                  print(f"::notice::X import works ({link})")
+                  break
+              except Exception as e:
+                  print(f"::warning::X import check failed for {link}: {e} | details: {st.get('errors')}")
           PY
 
       - name: Install NSIS and MinGW
