@@ -1088,6 +1088,16 @@ class Canvas(QWidget):
         alt = bool(e.modifiers() & Qt.AltModifier)
         if kind == "move":
             _, ov, ox, oy = self.drag
+            held = getattr(ov, "attach_gap", None) is not None or getattr(ov, "fit_one_line", False)
+            if held and abs(pt.y() - oy - ov.y) < 12:
+                # placed automatically: small vertical wobble (a click, a sideways drag) keeps it in place
+                ov.x = pt.x() - ox
+                a.clamp_layer(ov)
+                r = ov.rect()
+                dx, _dy = self.snap(r, ov, alt)
+                ov.move_to(r.left() + dx, r.top())
+                a.layer_changed(sync_panel=False)
+                return
             a.detach(ov)
             ov.x, ov.y = pt.x() - ox, pt.y() - oy
             a.clamp_layer(ov)
@@ -1868,6 +1878,12 @@ class ReelMaker(QMainWindow):
                                       "If no box is marked, the first text box is used.")
         self.txt_from_post.toggled.connect(self.on_layer_controls)
         v.addWidget(self.txt_from_post)
+        self.txt_fit = QCheckBox("Auto size and place one-line text")
+        self.txt_fit.setToolTip("When the words fit on one line, the text gets bigger and sits in a balanced spot "
+                                "above the video: not squeezed against it, not floating near the top. Longer text "
+                                "goes back to its normal size and sits on the video.")
+        self.txt_fit.toggled.connect(self.on_layer_controls)
+        v.addWidget(self.txt_fit)
 
         self.emoji_label = label("Built-in emoji", "faint")
         eb = QToolButton()
@@ -1887,7 +1903,7 @@ class ReelMaker(QMainWindow):
         self.text_style_controls = [self.txt_font, self.load_font_btn, self.txt_weight, self.txt_size,
                                     self.txt_color, self.align_seg, self.txt_width, self.txt_spacing,
                                     self.txt_style, self.txt_box_color, self.txt_box_alpha,
-                                    self.txt_radius, self.txt_pad, self.txt_shadow, self.txt_from_post]
+                                    self.txt_radius, self.txt_pad, self.txt_shadow, self.txt_from_post, self.txt_fit]
         return w
 
     # ------------------------------------------------------------ Cover tab
@@ -2640,11 +2656,12 @@ class ReelMaker(QMainWindow):
                     self.txt_edit.setPlainText(o.text)
                 self.txt_font.setCurrentFont(QFont(o.family))
                 self.txt_weight.setCurrentIndex([w for _, w in WEIGHTS].index(o.weight))
-                self.txt_size.setValue(o.size)
+                self.txt_size.setValue(o.base_size())
                 self.txt_color.setColor(o.color)
                 self.align_seg.setValue(("left", "center", "right").index(o.align))
                 self.txt_shadow.setChecked(o.shadow)
                 self.txt_from_post.setChecked(bool(getattr(o, "from_post", False)))
+                self.txt_fit.setChecked(bool(getattr(o, "fit_one_line", False)))
                 self.txt_width.setValue(int(o.w))
                 self.txt_spacing.setValue(o.spacing)
                 self.txt_style.setValue(("box", "highlight", "plain").index(o.style))
@@ -2677,10 +2694,18 @@ class ReelMaker(QMainWindow):
         else:
             o.family = self.txt_font.currentFont().family()
             o.weight = WEIGHTS[self.txt_weight.currentIndex()][1]
-            o.size = self.txt_size.value()
+            if o.fit_base:
+                o.fit_base = self.txt_size.value()   # a one-line fit is showing: change the box's own size
+            else:
+                o.size = self.txt_size.value()
             o.align = ("left", "center", "right")[max(0, self.align_seg.value())]
             o.shadow = self.txt_shadow.isChecked()
             o.from_post = self.txt_from_post.isChecked()
+            if self.txt_fit.isChecked() != o.fit_one_line:
+                o.fit_one_line = self.txt_fit.isChecked()
+                if not o.fit_one_line:
+                    self.unfit(o)
+                    o.attach_gap = o.attach_gap if o.attach_gap is not None else float(self.sit_gap.value())
             o.w = float(self.txt_width.value())
             o.spacing = self.txt_spacing.value()
             o.style = ("box", "highlight", "plain")[max(0, self.txt_style.value())]
@@ -2753,9 +2778,54 @@ class ReelMaker(QMainWindow):
 
     def reapply_attachments(self):
         for o in self.layers:
+            if o.kind == "text" and getattr(o, "fit_one_line", False):
+                if not self.fit_one_liner(o):
+                    gap = o.attach_gap if o.attach_gap is not None else 24.0
+                    self.sit_on_video(o, gap)       # longer text: its own size, sitting on the video
+                continue
             gap = getattr(o, "attach_gap", None)
             if gap is not None:
                 self.sit_on_video(o, gap)
+
+    # ---- one-line text: bigger, and placed in the space above the video
+    FIT_MAX = 140          # px, the largest one-line size
+    FIT_FILL = 0.55        # the box may use this much of the height between the safe zone top and the video
+    FIT_LOW = 0.38         # share of the leftover space that goes below the box (0.5 would be dead centre)
+    FIT_MIN_GAP = 28       # px, never closer to the video than this
+
+    def unfit(self, o):
+        if o.fit_base:
+            o.size, o.fit_base = o.fit_base, None
+
+    def fit_one_liner(self, o):
+        """Size and place one-line text. Returns False when the text isn't one line or there's no room."""
+        base = o.base_size()
+        vr, z = self.video_rect(), self.zone()
+        key = (o.text, base, o.w, o.family, o.weight, o.style, o.pad, o.spacing,
+               round(vr.top(), 1), round(z.top(), 1), EMOJI.folder, EMOJI.font_family)
+        hit = getattr(o, "_fit_key", None) == key
+        self.unfit(o)
+        if not hit:
+            o._fit_key, o._fit_size = key, None
+            text = o.text.strip()
+            space = vr.top() - z.top()
+            if text and "\n" not in text and len(o.layout()[0]) == 1 and space > o.h + self.FIT_MIN_GAP:
+                best = base
+                for s in range(base + 2, self.FIT_MAX + 1, 2):
+                    o.size = s
+                    if len(o.layout()[0]) > 1 or o.h > space * self.FIT_FILL:
+                        break
+                    best = s
+                o.size = base
+                o._fit_size = best
+        if o._fit_size is None:
+            return False
+        if o._fit_size != base:
+            o.size, o.fit_base = o._fit_size, base
+        free = vr.top() - z.top() - o.h
+        gap = max(self.FIT_MIN_GAP, free * self.FIT_LOW)
+        o.move_to(o.x - o.w / 2, vr.top() - gap - o.h)
+        return True
 
     def toggle_sit_on_video(self, on):
         o = self.selected()
@@ -2778,6 +2848,14 @@ class ReelMaker(QMainWindow):
             self.changed()
 
     def detach(self, o):
+        if getattr(o, "fit_one_line", False):
+            o.fit_one_line = False
+            self.unfit(o)
+            if o is self.selected():
+                self.txt_fit.blockSignals(True)
+                self.txt_fit.setChecked(False)
+                self.txt_fit.blockSignals(False)
+            self.status("Moved by hand, so “Auto size and place one-line text” is off for this box.")
         if getattr(o, "attach_gap", None) is not None:
             o.attach_gap = None
             if o is self.selected():
@@ -3876,7 +3954,8 @@ class ReelMaker(QMainWindow):
             t = TextLayer(text)
             t.w = max(200.0, self.zone().width() - 80)
             t.from_post = True
-            t.attach_gap = 24.0          # sit just above the video
+            t.fit_one_line = True        # one-line posts get the big, balanced look
+            t.attach_gap = 24.0          # longer ones sit just above the video
             t.size = 48
             self.layers.append(t)
             self.sit_on_video(t, t.attach_gap)

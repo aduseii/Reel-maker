@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.14.1"
+__version__ = "1.15.0"
 
 import os
 import re
@@ -426,7 +426,7 @@ class TextLayer:
     (x, y) is the centre of the top edge, so extra lines grow downward."""
     kind = "text"
     FIELDS = ("text", "family", "weight", "size", "align", "style", "box_alpha", "radius", "pad",
-              "spacing", "shadow", "opacity", "w", "x", "y", "attach_gap", "from_post")
+              "spacing", "shadow", "opacity", "w", "x", "y", "attach_gap", "from_post", "fit_one_line")
 
     def __init__(self, text="Your text here"):
         self.text = text
@@ -445,6 +445,8 @@ class TextLayer:
         self.opacity = 1.0
         self.attach_gap = None
         self.from_post = False       # filled with the post's text when importing from an X link
+        self.fit_one_line = False    # one-line text gets a bigger size and a balanced spot above the video
+        self.fit_base = None         # the box's own size while a bigger "one line" size is shown
         self.w = 760.0
         self.x = W / 2
         self.y = H / 2
@@ -459,8 +461,13 @@ class TextLayer:
         self.x = left + self.w / 2
         self.y = top
 
+    def base_size(self):
+        """The size set for the box (not the bigger size a one-line fit may be showing)."""
+        return self.fit_base or self.size
+
     def to_dict(self):
         d = {k: getattr(self, k) for k in self.FIELDS}
+        d["size"] = self.base_size()
         d.update(kind="text", color=color_hex(self.color), box_color=color_hex(self.box_color))
         return d
 
