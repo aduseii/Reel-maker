@@ -268,6 +268,27 @@ def _videos(info):
     return [info]
 
 
+def _lookup(yt_dlp, url, state):
+    """Ask X for the post: the normal way first, then X's embed (syndication) API,
+    which still works for many public posts when the normal way is refused."""
+    first = None
+    for api in (None, "syndication"):
+        o = _opts(state, _Log(), save_folder())
+        if api:
+            o["extractor_args"] = {"twitter": {"api": [api]}}
+        try:
+            with yt_dlp.YoutubeDL(o) as ydl:
+                return ydl.extract_info(url, download=False)
+        except Cancelled:
+            raise
+        except Exception as e:  # noqa
+            first = first or e
+            state.setdefault("errors", []).append(f"{api or 'default'}: {e}")
+            if "no video could be found" in str(e).lower():
+                break                     # the post is there, it just has no video
+    raise first
+
+
 def get_post(url, state):
     """Look up the post. Returns {'videos': [...], 'caption', 'uploader', 'uploader_id', 'id'}.
     Runs in a background thread; updates state['stage']."""
@@ -279,11 +300,9 @@ def get_post(url, state):
         pass                                 # offline PyPI isn't a reason to stop; the bundled copy may work
     while True:
         yt_dlp = load_ytdlp()
-        log = _Log()
         state["stage"] = "lookup"
         try:
-            with yt_dlp.YoutubeDL(_opts(state, log, save_folder())) as ydl:
-                info = ydl.extract_info(url, download=False)
+            info = _lookup(yt_dlp, url, state)
             break
         except Cancelled:
             raise

@@ -56,12 +56,13 @@ jobs:
               version_tuple=lambda v: tuple(int(n) for n in __import__("re").findall(r"\d+", v or "")[:4]) or (0,))
           import x_import as X
           url = X.find_link("https://x.com/NASA/status/623160978427936768")
+          st = {}
           try:
-              post = X.get_post(url, {})
+              post = X.get_post(url, st)
               path = X.download_video(post, 0, {})
               print(f"X import OK with yt-dlp {post['version']}: {os.path.getsize(path)} bytes, caption {post['caption']!r}")
           except Exception as e:
-              print(f"::warning::X import check failed (X may block GitHub's servers): {e}")
+              print(f"::warning::X import check failed (X may block GitHub's servers): {e} | details: {st.get('errors')}")
           PY
 
       - name: Install NSIS and MinGW
