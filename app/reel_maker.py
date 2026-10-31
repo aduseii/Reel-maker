@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QMenu, QInputDialog, QProgressDialog)
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 
+import x_import  # noqa: E402  (X/Twitter link import)
 from core import (__version__, check_for_update, download_update, W, H, ACCENT, DEFAULT_FONT, PRESETS, VIDEO_EXT, IMAGE_EXT, WEIGHTS, APPDATA,
                   TEMPLATE_DIR, EMOJI, ImageLayer, TextLayer, color_hex, res_path, fmt_time,
                   find_ffmpeg, download_ffmpeg)
@@ -297,6 +298,15 @@ def icon(kind, color=C["text"], size=20):
         path.lineTo(15.8, 7.4)
         path.lineTo(12, 7.9)
         p.drawPath(path)
+    elif kind == "link":
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.save()
+        p.translate(12, 12)
+        p.rotate(-45)
+        p.drawRoundedRect(QRectF(-9.5, -3.4, 10, 6.8), 3.4, 3.4)
+        p.drawRoundedRect(QRectF(-0.5, -3.4, 10, 6.8), 3.4, 3.4)
+        p.restore()
     elif kind == "down":
         p.setPen(pen)
         path = QPainterPath()
@@ -1369,6 +1379,9 @@ class ReelMaker(QMainWindow):
         self.restore_last_template()
         self.update_lock_ui()
         self.setAcceptDrops(True)
+        self.x_busy = False
+        paste = QShortcut(QKeySequence.Paste, self)
+        paste.activated.connect(self.paste_link)
         self.update_info = None
         self.update_busy = False
         import cloud
@@ -1426,7 +1439,7 @@ class ReelMaker(QMainWindow):
         sl.addWidget(self.tabs)
         body.addWidget(side)
 
-        self.statusBar().showMessage("Open a 16:9 video to start.")
+        self.statusBar().showMessage("Open a 16:9 video to start, or copy an X post link and press Ctrl+V.")
         sc = QShortcut(QKeySequence(Qt.Key_Space), self)
         sc.activated.connect(self.space_pressed)
         dl = QShortcut(QKeySequence(Qt.Key_Delete), self.canvas)
@@ -1455,6 +1468,14 @@ class ReelMaker(QMainWindow):
         open_btn.setCursor(Qt.PointingHandCursor)
         open_btn.clicked.connect(self.open_video)
         l.addWidget(open_btn)
+        x_btn = QPushButton(" From X link")
+        x_btn.setIcon(icon("link", C["text"], 16))
+        x_btn.setObjectName("ghost")
+        x_btn.setCursor(Qt.PointingHandCursor)
+        x_btn.setToolTip("Paste a link to an X (Twitter) post: Reel Maker downloads the video and puts the "
+                         "post's text in your template's caption box. You can also just press Ctrl+V.")
+        x_btn.clicked.connect(lambda: self.import_from_x())
+        l.addWidget(x_btn)
         self.file_label = label("No video loaded", "muted")
         l.addWidget(self.file_label, 1)
 
@@ -1842,6 +1863,11 @@ class ReelMaker(QMainWindow):
         self.txt_shadow = QCheckBox("Shadow")
         self.txt_shadow.toggled.connect(self.on_layer_controls)
         v.addWidget(self.txt_shadow)
+        self.txt_from_post = QCheckBox("Caption box for X imports")
+        self.txt_from_post.setToolTip("When you import from an X link, the post's text goes into this box. "
+                                      "If no box is marked, the first text box is used.")
+        self.txt_from_post.toggled.connect(self.on_layer_controls)
+        v.addWidget(self.txt_from_post)
 
         self.emoji_label = label("Built-in emoji", "faint")
         eb = QToolButton()
@@ -1861,7 +1887,7 @@ class ReelMaker(QMainWindow):
         self.text_style_controls = [self.txt_font, self.load_font_btn, self.txt_weight, self.txt_size,
                                     self.txt_color, self.align_seg, self.txt_width, self.txt_spacing,
                                     self.txt_style, self.txt_box_color, self.txt_box_alpha,
-                                    self.txt_radius, self.txt_pad, self.txt_shadow]
+                                    self.txt_radius, self.txt_pad, self.txt_shadow, self.txt_from_post]
         return w
 
     # ------------------------------------------------------------ Cover tab
@@ -2205,6 +2231,7 @@ class ReelMaker(QMainWindow):
 
     def load_video(self, path):
         self.src_path = path
+        self._pending_x = None
         self._clip_src = None          # the timeline/trim must be reset for this video
         # clear the previous video's timeline straight away; the new length arrives once it loads
         self.duration = self.clip_in = self.clip_out = 0.0
@@ -2251,6 +2278,8 @@ class ReelMaker(QMainWindow):
     def frame_arrived(self, img, first):
         self.frame = img
         self.src_ar = img.width() / img.height()
+        if first and getattr(self, "_pending_x", None):
+            self.finish_x_post()
         if first or (self.tabs.currentIndex() == 2 and self.cover_src_seg.value() == 0):
             self.grab_cover_frame()
         self.canvas.update()
@@ -2615,6 +2644,7 @@ class ReelMaker(QMainWindow):
                 self.txt_color.setColor(o.color)
                 self.align_seg.setValue(("left", "center", "right").index(o.align))
                 self.txt_shadow.setChecked(o.shadow)
+                self.txt_from_post.setChecked(bool(getattr(o, "from_post", False)))
                 self.txt_width.setValue(int(o.w))
                 self.txt_spacing.setValue(o.spacing)
                 self.txt_style.setValue(("box", "highlight", "plain").index(o.style))
@@ -2650,6 +2680,7 @@ class ReelMaker(QMainWindow):
             o.size = self.txt_size.value()
             o.align = ("left", "center", "right")[max(0, self.align_seg.value())]
             o.shadow = self.txt_shadow.isChecked()
+            o.from_post = self.txt_from_post.isChecked()
             o.w = float(self.txt_width.value())
             o.spacing = self.txt_spacing.value()
             o.style = ("box", "highlight", "plain")[max(0, self.txt_style.value())]
@@ -3686,13 +3717,196 @@ class ReelMaker(QMainWindow):
         self.player.stop()
         QApplication.quit()
 
+    # ============================================================ import from an X link
+    def paste_link(self):
+        link = x_import.find_link(QApplication.clipboard().text())
+        if link:
+            self.import_from_x(link)
+        else:
+            self.status("To import from X, copy a post's link (Share → Copy link) and press Ctrl+V here.")
+
+    def ask_x_link(self):
+        from PySide6.QtWidgets import QDialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Import from X")
+        dlg.setMinimumWidth(480)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(24, 22, 24, 20)
+        v.setSpacing(12)
+        v.addWidget(label("Import from an X link", "section"))
+        info = QLabel("Paste the link to a post with a video. Reel Maker downloads the video, puts it in your "
+                      "current template and fills the caption box with the post's text. Then just pick a cover "
+                      "and export.")
+        info.setWordWrap(True)
+        v.addWidget(info)
+        edit = QLineEdit()
+        edit.setPlaceholderText("https://x.com/…/status/…")
+        clip = x_import.find_link(QApplication.clipboard().text())
+        if clip:
+            edit.setText(clip)
+        v.addWidget(edit)
+        hint = label("", "faint")
+        v.addWidget(hint)
+        go = QPushButton("Import")
+        go.setObjectName("primary")
+        go.setCursor(Qt.PointingHandCursor)
+        cancel = QPushButton("Cancel")
+        cancel.setObjectName("ghost")
+        cancel.clicked.connect(dlg.reject)
+        v.addWidget(row(None, cancel, go))
+
+        def check(text):
+            ok = x_import.find_link(text) is not None
+            go.setEnabled(ok)
+            hint.setText("" if ok or not text.strip() else "That doesn't look like a link to an X post.")
+        edit.textChanged.connect(check)
+        check(edit.text())
+        go.clicked.connect(dlg.accept)
+        go.setDefault(True)
+        edit.setFocus()
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        return x_import.find_link(edit.text())
+
+    def import_from_x(self, url=None):
+        if self.x_busy:
+            return
+        if self.proc and self.proc.state() != QProcess.NotRunning:
+            QMessageBox.information(self, "Import from X", "Wait for the export to finish, then import.")
+            return
+        url = url or self.ask_x_link()
+        if not url:
+            return
+        self.x_busy = True
+        self.player.pause()
+        state = {"stage": "updater", "done": 0, "total": 0}
+        dlg = QProgressDialog("Getting the post…", "Cancel", 0, 0, self)
+        dlg.setWindowTitle("Import from X")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setMinimumWidth(400)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.canceled.connect(lambda: state.__setitem__("cancel", True))
+        timer = QTimer(self)
+        texts = {"updater": "Checking the downloader…", "lookup": "Getting the post…",
+                 "finishing": "Finishing the video…"}
+
+        def tick():
+            st = state.get("stage")
+            if st == "download":
+                if state["total"]:
+                    dlg.setMaximum(100)
+                    dlg.setValue(min(99, int(100 * state["done"] / state["total"])))
+                    dlg.setLabelText(f"Downloading the video…  {state['done'] / 1048576:.1f} of "
+                                     f"{state['total'] / 1048576:.1f} MB")
+                else:
+                    dlg.setLabelText("Downloading the video…")
+            elif st in texts:
+                if st == "finishing":
+                    dlg.setMaximum(0)
+                dlg.setLabelText(texts[st])
+        timer.timeout.connect(tick)
+        timer.start(120)
+
+        def finish(msg=None, error=None):
+            timer.stop()
+            self.x_busy = False
+            dlg.canceled.disconnect()
+            dlg.close()
+            if state.get("cancel"):
+                self.status("Import cancelled.")
+            elif error:
+                self.status("Couldn't import that post.")
+                QMessageBox.warning(self, "Import from X", error)
+            elif msg:
+                self.status(msg)
+
+        def got_post(post, error):
+            if state.get("cancel") or error:
+                finish(error=error)
+                return
+            vids = post["videos"]
+            idx = 0
+            if len(vids) > 1:
+                names = []
+                for i, e in enumerate(vids):
+                    d = e.get("duration")
+                    names.append(f"Video {i + 1}" + (f"  ({fmt_time(d)[:-3]})" if d else ""))
+                choice, ok = QInputDialog.getItem(self, "Import from X",
+                                                  f"This post has {len(vids)} videos. Which one?", names, 0, False)
+                if not ok:
+                    state["cancel"] = True
+                    finish()
+                    return
+                idx = names.index(choice)
+            state["stage"] = "download"
+
+            def got_file(path, error):
+                if state.get("cancel") or error:
+                    finish(error=error)
+                    return
+                finish()
+                self.apply_x_post(path, post)
+            self.run_in_thread(lambda: x_import.download_video(post, idx, state), got_file)
+        self.run_in_thread(lambda: x_import.get_post(url, state), got_post)
+
+    def apply_x_post(self, path, post):
+        self.settings.setValue("last_dir", os.path.dirname(path))
+        if self.canvas.editor:
+            self.canvas.finish_edit()
+        self.load_video(path)
+        self._pending_x = post               # finished once the first frame (and so the video's shape) is known
+        self.tabs.setCurrentIndex(2)
+
+    def finish_x_post(self):
+        post, self._pending_x = self._pending_x, None
+        who = f"@{post['uploader_id']}" if post.get("uploader_id") else "the post"
+        note = self.fill_caption(post.get("caption") or "")
+        self.tabs.setCurrentIndex(2)
+        self.status(f"Imported {who}'s video. {note}Pick a cover, then Export reel.")
+
+    def fill_caption(self, text):
+        """Put the post's text in the template's caption box. Returns a note for the status bar."""
+        if not text:
+            return "The post has no text, so the caption box wasn't changed. "
+        texts = [o for o in self.layers if o.kind == "text"]
+        targets = [o for o in texts if getattr(o, "from_post", False)] or texts[:1]
+        if not targets:
+            t = TextLayer(text)
+            t.w = max(200.0, self.zone().width() - 80)
+            t.from_post = True
+            t.attach_gap = 24.0          # sit just above the video
+            t.size = 48
+            self.layers.append(t)
+            self.sit_on_video(t, t.attach_gap)
+            while t.size > 30 and t.rect().top() < self.zone().top():
+                t.size -= 2                # a new box: shrink the words until they fit above the video
+                self.sit_on_video(t, t.attach_gap)
+            targets = [t]
+        for t in targets:
+            t.text = text
+        self.refresh_list()
+        self.select_layer(self.layers.index(targets[0]))
+        self.changed()
+        z = self.zone()
+        if any(t.rect().top() < z.top() - 1 or t.rect().bottom() > z.bottom() + 1 for t in targets):
+            return "The caption is long and runs outside the safe zone; shorten it on the preview. "
+        return ""
+
     # ============================================================ drag & drop / keys
     def dragEnterEvent(self, e):
-        if e.mimeData().hasUrls():
+        if e.mimeData().hasUrls() or e.mimeData().hasText():
             e.acceptProposedAction()
 
     def dropEvent(self, e):
-        for url in e.mimeData().urls():
+        md = e.mimeData()
+        remote = [u.toString() for u in md.urls() if not u.isLocalFile()]
+        link = x_import.find_link(" ".join(remote) + " " + (md.text() if md.hasText() else ""))
+        if link:
+            self.import_from_x(link)
+            return
+        for url in md.urls():
             path = url.toLocalFile()
             ext = os.path.splitext(path)[1].lower()
             if ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):

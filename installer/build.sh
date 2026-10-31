@@ -24,12 +24,15 @@ echo "==> Windows wheels"
 python3 -m pip download -q --dest "$WORK/wheels" --platform win_amd64 --python-version 3.12 \
   --only-binary=:all: --no-deps \
   "PySide6-Essentials==$QT_VER" "PySide6-Addons==$QT_VER" "shiboken6==$QT_VER" "imageio-ffmpeg==0.6.0"
+# yt-dlp (X link import) is pure Python; the newest one at build time is bundled and the app keeps it updated
+python3 -m pip download -q --dest "$WORK/wheels" --no-deps --only-binary=:all: yt-dlp
 
 SP="$STAGE/python/Lib/site-packages"
 mkdir -p "$SP"
 (cd "$SP"
  unzip -q -o "$WORK"/wheels/shiboken6-*.whl
  unzip -q -o "$WORK"/wheels/imageio_ffmpeg-*.whl
+ unzip -q -o "$WORK"/wheels/yt_dlp-*.whl 'yt_dlp/*' 'yt_dlp-*.dist-info/*'
  unzip -q -o "$WORK"/wheels/pyside6_essentials-*.whl
  unzip -q -o "$WORK"/wheels/pyside6_addons-*.whl \
    'PySide6/Qt6Multimedia.dll' 'PySide6/QtMultimedia.pyd' 'PySide6/plugins/multimedia/windowsmediaplugin.dll')
@@ -89,7 +92,7 @@ EOF
 
 echo "==> App files"
 mkdir -p "$STAGE/app"
-cp "$ROOT"/app/{reel_maker.py,core.py,cloud.py,launch.pyw,icon.ico,emoji_list.json} "$STAGE/app/"
+cp "$ROOT"/app/{reel_maker.py,core.py,cloud.py,x_import.py,launch.pyw,icon.ico,emoji_list.json} "$STAGE/app/"
 cp -r "$ROOT/app/fonts" "$ROOT/app/emoji" "$STAGE/app/"
 cp "$ROOT/app/icon.ico" "$ROOT/installer/get-ffmpeg.ps1" "$STAGE/"
 

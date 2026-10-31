@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.13.0"
+__version__ = "1.14.0"
 
 import os
 import re
@@ -426,7 +426,7 @@ class TextLayer:
     (x, y) is the centre of the top edge, so extra lines grow downward."""
     kind = "text"
     FIELDS = ("text", "family", "weight", "size", "align", "style", "box_alpha", "radius", "pad",
-              "spacing", "shadow", "opacity", "w", "x", "y", "attach_gap")
+              "spacing", "shadow", "opacity", "w", "x", "y", "attach_gap", "from_post")
 
     def __init__(self, text="Your text here"):
         self.text = text
@@ -444,6 +444,7 @@ class TextLayer:
         self.shadow = False
         self.opacity = 1.0
         self.attach_gap = None
+        self.from_post = False       # filled with the post's text when importing from an X link
         self.w = 760.0
         self.x = W / 2
         self.y = H / 2

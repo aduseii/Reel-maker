@@ -12,6 +12,7 @@ A Windows desktop app that turns a 16:9 video into a 1080 × 1920 Instagram Reel
 - **Templates:** save a layout once, and every new video uses it locked in place. Only the words and images change. Sign in with GitHub to keep them in the cloud and use them on any PC.
 - **Cover editor:** frame a 9:16 window over the full 16:9 picture, add a title and save a PNG. The cover is built into the reel as its first frame (so Instagram uses it as the cover automatically) and stored as the MP4's thumbnail
 - **Export:** H.264 MP4 with AAC audio, ready for Instagram: text and logos are mixed in at full colour detail with high-quality scaling and correct BT.709 colours, so they stay crisp after Instagram re-compresses them, with **Play video**, **Show in folder** and **Post to Instagram** (opens Instagram and selects the reel so you can drag it in) when it finishes
+- **From X link:** paste a link to an X (Twitter) post (the **From X link** button, or just press **Ctrl+V** in the window) and Reel Maker downloads the video, loads it into your current template, fills the caption box with the post's text (links and leading @replies removed) and opens the Cover tab, so all that's left is picking a cover and exporting. Mark the box to fill with **Layers → Text → Caption box for X imports** (otherwise the first text box is used; with no text box, one is added just above the video). Videos are saved to `Videos\Reel Maker\From X`. Posts that X only shows to signed-in people (sensitive content, protected accounts) can't be imported.
 - **Built-in updates:** one click installs the newest release
 
 ## Install
@@ -36,6 +37,8 @@ The app is plain Python (PySide6) in `app/`:
 | --- | --- |
 | `app/reel_maker.py` | Window, panels, templates, cover editor, export |
 | `app/core.py` | Version number, encoder download, emoji, text layout, layers |
+| `app/x_import.py` | X link import: finds the post, downloads the video, cleans up the caption, keeps yt-dlp updated |
+| `app/cloud.py` | GitHub sign-in and cloud templates |
 | `app/launch.pyw` | Starts the app and shows a message if startup fails |
 | `installer/` | Installer script and build script |
 
@@ -61,6 +64,8 @@ Installing a new version replaces the old one and keeps your templates.
 - Templates: `%LOCALAPPDATA%\ReelMaker\templates\` (and your GitHub gist when signed in)
 - GitHub sign-in (encrypted for your Windows account): `%LOCALAPPDATA%\ReelMaker\cloud\`
 - Video encoder: `%LOCALAPPDATA%\ReelMaker\ffmpeg\`
+- Videos imported from X: `Videos\Reel Maker\From X\`
+- Newer copies of the X downloader (yt-dlp): `%LOCALAPPDATA%\ReelMaker\ytdlp\`
 - Error log: `%LOCALAPPDATA%\ReelMaker\error.log`
 
 ## Credits
@@ -69,3 +74,4 @@ Installing a new version replaces the old one and keeps your templates.
 - Noto Emoji by Google, Apache License 2.0 (`app/emoji/NOTICE.txt`)
 - Emoji names and groups from unicode-emoji-json, MIT (`app/emoji/LICENSE-unicode-emoji-json.txt`)
 - FFmpeg via imageio-ffmpeg; Qt via PySide6 (LGPL)
+- yt-dlp (Unlicense) for downloading from X. It's bundled, and because X changes often the app fetches the newest yt-dlp from PyPI (checked against its published SHA-256) at most once a day, and again if a download fails.
