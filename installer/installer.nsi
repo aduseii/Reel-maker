@@ -82,6 +82,16 @@ Section "Install"
   CreateShortCut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\python\ReelMaker.exe" "" "$INSTDIR\python\ReelMaker.exe" 0
   CreateShortCut "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk" "$INSTDIR\Uninstall.exe"
   CreateShortCut "$DESKTOP\${APP}.lnk" "$INSTDIR\python\ReelMaker.exe" "" "$INSTDIR\python\ReelMaker.exe" 0
+  ; Windows keeps its own copy of app icons: re-point a pinned taskbar shortcut and refresh the icon
+  ; cache so a new icon shows after an update instead of the saved old one
+  !define PINNED "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
+  IfFileExists "${PINNED}\${APP}.lnk" 0 +2
+    CreateShortCut "${PINNED}\${APP}.lnk" "$INSTDIR\python\ReelMaker.exe" "" "$INSTDIR\python\ReelMaker.exe" 0
+  IfFileExists "${PINNED}\ReelMaker.lnk" 0 +2
+    CreateShortCut "${PINNED}\ReelMaker.lnk" "$INSTDIR\python\ReelMaker.exe" "" "$INSTDIR\python\ReelMaker.exe" 0
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  IfFileExists "$SYSDIR\ie4uinit.exe" 0 +2
+    nsExec::Exec '"$SYSDIR\ie4uinit.exe" -show'
 
   WriteRegStr HKCU "Software\ReelMaker" "InstallDir" "$INSTDIR"
   !define UNKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\ReelMaker"
