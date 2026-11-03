@@ -1990,6 +1990,28 @@ class ReelMaker(QMainWindow):
         pg.add(field("Quality", self.quality))
         self.fps = Segmented(["30 fps", "60 fps", "Source"])
         pg.add(field("Frame rate", self.fps))
+
+        pg.section("Save to")
+        self.out_dir_label = label("", None)
+        self.out_dir_label.setWordWrap(True)
+        pg.add(self.out_dir_label)
+        change = QPushButton(" Choose folder…")
+        change.setIcon(icon("folder", C["text"], 16))
+        change.setCursor(Qt.PointingHandCursor)
+        change.clicked.connect(self.choose_export_dir)
+        self.out_dir_reset = QPushButton("Next to the video")
+        self.out_dir_reset.setObjectName("ghost")
+        self.out_dir_reset.setCursor(Qt.PointingHandCursor)
+        self.out_dir_reset.setToolTip("Save each reel in the same folder as its video")
+        self.out_dir_reset.clicked.connect(lambda: self.set_export_dir(""))
+        pg.add(row(change, self.out_dir_reset, None))
+        self.ask_name = QCheckBox("Ask for a file name each time")
+        self.ask_name.setToolTip("Off: Export saves straight into the folder with an automatic name "
+                                 "(…_reel.mp4, then …_reel 2.mp4 and so on)")
+        self.ask_name.setChecked(self.settings.value("export_ask", True, type=bool))
+        self.ask_name.toggled.connect(lambda on: self.settings.setValue("export_ask", on))
+        pg.add(self.ask_name)
+        self.show_export_dir()
         pg.section("Cover in the video")
         self.cover_first = QCheckBox("Start the reel with the cover")
         self.cover_first.setChecked(True)
@@ -2003,7 +2025,7 @@ class ReelMaker(QMainWindow):
         self.cover_embed.setToolTip("Stores the cover inside the MP4 as its picture, shown by video players and "
                                     "file browsers that support it. Instagram doesn't use this.")
         pg.add(self.cover_embed)
-        self.save_cover_too = QCheckBox("Also save the cover as a PNG next to the video")
+        self.save_cover_too = QCheckBox("Also save the cover as a PNG with the reel")
         self.save_cover_too.setChecked(True)
         pg.add(self.save_cover_too)
         pg.lay.addSpacing(6)
@@ -3288,9 +3310,43 @@ class ReelMaker(QMainWindow):
         p.end()
         self.cover_prev.setPixmap(pm)
 
+    def export_dir(self):
+        """The chosen export folder, or "" for next to the video. A folder that's gone counts as unset."""
+        d = self.settings.value("export_dir", "", type=str) or ""
+        return d if d and os.path.isdir(d) else ""
+
+    def show_export_dir(self):
+        d = self.settings.value("export_dir", "", type=str) or ""
+        if d and not os.path.isdir(d):
+            self.out_dir_label.setText(f"{d}\n(This folder isn't available right now, so reels go next to their video.)")
+        else:
+            self.out_dir_label.setText(d or "Next to the video")
+        self.out_dir_reset.setVisible(bool(d))
+
+    def set_export_dir(self, d):
+        self.settings.setValue("export_dir", d)
+        self.show_export_dir()
+        self.status(f"Exports now go to {d}." if d else "Exports now go next to their video.")
+
+    def choose_export_dir(self):
+        start = self.export_dir() or (os.path.dirname(self.src_path) if self.src_path else os.path.expanduser("~"))
+        d = QFileDialog.getExistingDirectory(self, "Where should exports go?", start)
+        if d:
+            self.set_export_dir(os.path.normpath(d))
+
     def default_name(self, suffix, ext):
-        base = os.path.splitext(self.src_path)[0] if self.src_path else os.path.join(os.path.expanduser("~"), "reel")
-        return f"{base}{suffix}.{ext}"
+        stem = os.path.splitext(os.path.basename(self.src_path))[0] if self.src_path else "reel"
+        folder = self.export_dir() or (os.path.dirname(self.src_path) if self.src_path else os.path.expanduser("~"))
+        return os.path.join(folder, f"{stem}{suffix}.{ext}")
+
+    @staticmethod
+    def unique_path(path):
+        base, ext = os.path.splitext(path)
+        n = 2
+        while os.path.exists(path):
+            path = f"{base} {n}{ext}"
+            n += 1
+        return path
 
     def save_cover(self):
         if self.cover_source() is None:
@@ -3468,9 +3524,13 @@ class ReelMaker(QMainWindow):
             return
         if self.proc and self.proc.state() != QProcess.NotRunning:
             return
-        out, _ = QFileDialog.getSaveFileName(self, "Export reel", self.default_name("_reel", "mp4"), "MP4 video (*.mp4)")
-        if not out:
-            return
+        suggested = self.default_name("_reel", "mp4")
+        if self.ask_name.isChecked():
+            out, _ = QFileDialog.getSaveFileName(self, "Export reel", suggested, "MP4 video (*.mp4)")
+            if not out:
+                return
+        else:
+            out = self.unique_path(suggested)
         if not out.lower().endswith(".mp4"):
             out += ".mp4"
         if os.path.abspath(out) == os.path.abspath(self.src_path):
