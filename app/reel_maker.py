@@ -1249,6 +1249,7 @@ class CoverCanvas(QWidget):
 class Timeline(QWidget):
     trimChanged = Signal(float, float)
     seek = Signal(float)
+    scrubbing = Signal(bool)       # True while the mouse is held on the timeline
 
     def __init__(self):
         super().__init__()
@@ -1311,6 +1312,7 @@ class Timeline(QWidget):
             self.mode = "end"
         else:
             self.mode = "seek"
+        self.scrubbing.emit(True)
         self.mouseMoveEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -1330,7 +1332,9 @@ class Timeline(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
-        self.mode = None
+        if self.mode:
+            self.mode = None
+            self.scrubbing.emit(False)
 
 
 # ---------------------------------------------------------------- main window
@@ -1361,6 +1365,9 @@ class ReelMaker(QMainWindow):
         self._syncing = False
         self.tmpdir = tempfile.mkdtemp(prefix="reelmaker_")
         self._priming = False
+        self._play_after_load = False    # Play pressed while the video was still loading
+        self._resume_after_scrub = False
+        self._loop_guard = 0.0           # ignore stale positions for a moment after a seek we made
         self.fallback = False
         self.fb_pos = 0.0
         self.clip_in = 0.0          # the part of the source the timeline shows (absolute seconds);
@@ -1452,6 +1459,7 @@ class ReelMaker(QMainWindow):
 
         self.statusBar().showMessage("Open a 16:9 video to start, or copy an X post link and press Ctrl+V.")
         sc = QShortcut(QKeySequence(Qt.Key_Space), self)
+        sc.setAutoRepeat(False)
         sc.activated.connect(self.space_pressed)
         dl = QShortcut(QKeySequence(Qt.Key_Delete), self.canvas)
         dl.activated.connect(self.remove_layer)
@@ -1557,6 +1565,7 @@ class ReelMaker(QMainWindow):
         self.timeline = Timeline()
         self.timeline.trimChanged.connect(self.on_timeline_trim)
         self.timeline.seek.connect(lambda t: self.seek_to(self.clip_in + t))
+        self.timeline.scrubbing.connect(self.on_scrub)
         top.addWidget(self.timeline, 1)
         self.cut_btn = QPushButton(" Delete trimmed parts")
         self.cut_btn.setIcon(icon("cut", C["text"], 16))
@@ -2271,6 +2280,7 @@ class ReelMaker(QMainWindow):
         self.file_label.style().unpolish(self.file_label)
         self.file_label.style().polish(self.file_label)
         self._priming = True
+        self._play_after_load = False
         self.audio.setMuted(True)
         self.player.stop()
         self.player.setSource(QUrl())            # the player ignores being given the file it already has
@@ -2326,6 +2336,10 @@ class ReelMaker(QMainWindow):
                 # the player doesn't re-announce a duration equal to the last video's
                 self.on_duration(self.player.duration())
             self.audio.setMuted(self.mute.isChecked())
+            self.on_state(self.player.playbackState())
+            if self._play_after_load:
+                self._play_after_load = False
+                QTimer.singleShot(0, self.play)
             ar = img.width() / img.height()
             note = "" if abs(ar - 16 / 9) < 0.05 else f" (this video is {ar:.2f}:1, not 16:9)"
             self.status(f"{img.width()} × {img.height()} loaded{note}. Space plays and pauses.")
@@ -2409,6 +2423,33 @@ class ReelMaker(QMainWindow):
         return self.clip_in + self.t_end.value()
 
     def on_duration(self, ms):
+        if ms <= 0:
+            return
+        if getattr(self, "_clip_src", None) == self.src_path and self.duration > 0:
+            # the same video refining its length (Windows does this while playing): keep the trim and
+            # keep playing; only stretch the timeline if it showed the whole video
+            new = ms / 1000
+            if abs(new - self.duration) < 0.001:
+                return
+            whole = self.clip_out >= self.duration - 0.01
+            end_at_tail = self.abs_end() >= self.duration - 0.01
+            self.duration = new
+            if whole:
+                self.clip_out = new
+                keep_e = (new - self.clip_in) if end_at_tail else self.t_end.value()
+                L = self.clip_out - self.clip_in
+                self.timeline.duration = L
+                for sb in (self.t_start, self.t_end):
+                    sb.blockSignals(True)
+                    sb.setMaximum(L)
+                self.t_end.setValue(min(keep_e, L))
+                for sb in (self.t_start, self.t_end):
+                    sb.blockSignals(False)
+                self.timeline.start, self.timeline.end = self.t_start.value(), self.t_end.value()
+                self.dur_label.setText(fmt_time(L))
+                self.update_trim_labels()
+                self.timeline.update()
+            return
         self._clip_src = self.src_path
         self.duration = ms / 1000
         self.clip_in, self.clip_out = 0.0, self.duration
@@ -2433,19 +2474,40 @@ class ReelMaker(QMainWindow):
         self.seek_to(self.abs_start())
         self.set_playhead(self.abs_start())
 
+    def play_range(self):
+        return ((self.clip_in, self.clip_out) if self.tabs.currentIndex() == 2
+                else (self.abs_start(), self.abs_end()))
+
     def on_position(self, ms):
+        import time
         t = ms / 1000
-        if self.player.playbackState() == QMediaPlayer.PlayingState and not self._priming:
-            lo, hi = ((self.clip_in, self.clip_out) if self.tabs.currentIndex() == 2
-                      else (self.abs_start(), self.abs_end()))
+        if self._priming:
+            return                       # the hidden first-frame load, not real playback
+        if self.is_playing() and not self._resume_after_scrub and time.monotonic() > self._loop_guard:
+            lo, hi = self.play_range()
             if t >= hi - 0.02 or t < lo - 0.25:
+                self._loop_guard = time.monotonic() + 0.4   # stale positions from before the jump
                 self.player.setPosition(int(lo * 1000))
+                self.set_playhead(lo)
                 return
         self.set_playhead(t)
 
-    def on_state(self, st):
-        playing = st == QMediaPlayer.PlayingState
+    def is_playing(self):
+        return self.player.playbackState() == QMediaPlayer.PlayingState and not self._priming
+
+    def on_state(self, st=None):
+        playing = self.is_playing() or self._play_after_load
         self.play_btn.setIcon(icon("pause" if playing else "play", C["bg"], 18))
+        self.play_btn.setToolTip("Pause (Space)" if playing else "Play (Space)")
+
+    def play(self):
+        import time
+        lo, hi = self.play_range()
+        t = self.player.position() / 1000
+        if t < lo - 0.01 or t >= hi - 0.05:
+            self._loop_guard = time.monotonic() + 0.4
+            self.player.setPosition(int(lo * 1000))
+        self.player.play()
 
     def toggle_play(self):
         if not self.src_path:
@@ -2453,15 +2515,25 @@ class ReelMaker(QMainWindow):
             return
         if self.fallback:
             return
-        if self.player.playbackState() == QMediaPlayer.PlayingState:
+        if self._priming:
+            # still loading: remember the choice and act on it as soon as the first frame is in
+            self._play_after_load = not self._play_after_load
+            self.on_state()
+            return
+        if self.is_playing():
             self.player.pause()
         else:
-            t = self.player.position() / 1000
-            lo, hi = ((self.clip_in, self.clip_out) if self.tabs.currentIndex() == 2
-                      else (self.abs_start(), self.abs_end()))
-            if t < lo or t >= hi - 0.05:
-                self.player.setPosition(int(lo * 1000))
-            self.player.play()
+            self.play()
+
+    def on_scrub(self, held):
+        # dragging the playhead pauses playback; letting go carries on if it was playing
+        if held:
+            self._resume_after_scrub = self.is_playing()
+            if self._resume_after_scrub:
+                self.player.pause()
+        elif self._resume_after_scrub:
+            self._resume_after_scrub = False
+            self.play()
 
     def on_timeline_trim(self, s, e):
         for sb, v in ((self.t_start, s), (self.t_end, e)):
