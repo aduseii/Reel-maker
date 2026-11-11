@@ -298,6 +298,23 @@ def icon(kind, color=C["text"], size=20):
         path.lineTo(15.8, 7.4)
         path.lineTo(12, 7.9)
         p.drawPath(path)
+    elif kind in ("undo", "redo"):
+        if kind == "redo":            # the same arrow, mirrored
+            p.translate(24, 0)
+            p.scale(-1, 1)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        path = QPainterPath()
+        path.moveTo(6, 9.5)
+        path.lineTo(14, 9.5)
+        path.cubicTo(20.5, 9.5, 20.5, 19, 14, 19)
+        path.lineTo(9.5, 19)
+        p.drawPath(path)
+        head = QPainterPath()
+        head.moveTo(9.5, 6)
+        head.lineTo(6, 9.5)
+        head.lineTo(9.5, 13)
+        p.drawPath(head)
     elif kind == "link":
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
@@ -1390,6 +1407,12 @@ class ReelMaker(QMainWindow):
         self.load_timer.timeout.connect(self.check_loaded)
         self.cover_timer = QTimer(self, singleShot=True, interval=150)
         self.cover_timer.timeout.connect(self.render_cover_preview)
+        self.cover_timer.timeout.connect(self.note_edit)   # fires after every layout, layer and cover change
+        self.hist_timer = QTimer(self, singleShot=True, interval=450)
+        self.hist_timer.timeout.connect(self.hist_commit)
+        self._hist = []
+        self._hist_i = -1
+        self._hist_restoring = False
 
         self.build_ui()
         self.apply_preset()
@@ -1408,6 +1431,7 @@ class ReelMaker(QMainWindow):
         if self.cloud.available and self.cloud.signed_in:
             QTimer.singleShot(3000, lambda: self.cloud_sync(quiet=True))
         QTimer.singleShot(2500, lambda: self.check_updates(quiet=True))
+        self.hist_reset()
 
     # ============================================================ layout
     def build_ui(self):
@@ -1465,6 +1489,10 @@ class ReelMaker(QMainWindow):
         dl.activated.connect(self.remove_layer)
         QShortcut(QKeySequence("Ctrl+O"), self, activated=self.open_video)
         QShortcut(QKeySequence("Ctrl+E"), self, activated=self.export)
+        # text fields keep their own Ctrl+Z while you type in them; everywhere else these undo editor changes
+        QShortcut(QKeySequence.Undo, self, activated=self.undo)
+        for seq in ("Ctrl+Y", "Ctrl+Shift+Z"):
+            QShortcut(QKeySequence(seq), self, activated=self.redo)
 
     def build_topbar(self):
         bar = QWidget()
@@ -1495,6 +1523,21 @@ class ReelMaker(QMainWindow):
                          "post's text in your template's caption box. You can also just press Ctrl+V.")
         x_btn.clicked.connect(lambda: self.import_from_x())
         l.addWidget(x_btn)
+        l.addSpacing(6)
+        self.undo_btn = QToolButton()
+        self.redo_btn = QToolButton()
+        for b, kind, tip, fn in ((self.undo_btn, "undo", "Undo (Ctrl+Z)", self.undo),
+                                 (self.redo_btn, "redo", "Redo (Ctrl+Y or Ctrl+Shift+Z)", self.redo)):
+            b.setObjectName("ghost")
+            ic = icon(kind, C["text"], 18)
+            ic.addPixmap(icon(kind, C["faint"], 18).pixmap(36, 36), QIcon.Disabled)   # dim when there's nothing to undo/redo
+            b.setIcon(ic)
+            b.setIconSize(QSize(18, 18))
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tip)
+            b.setEnabled(False)
+            b.clicked.connect(fn)
+            l.addWidget(b)
         self.file_label = label("No video loaded", "muted")
         l.addWidget(self.file_label, 1)
 
@@ -2453,6 +2496,7 @@ class ReelMaker(QMainWindow):
             new = ms / 1000
             if abs(new - self.duration) < 0.001:
                 return
+            self.hist_refined_length(self.duration, new)
             whole = self.clip_out >= self.duration - 0.01
             end_at_tail = self.abs_end() >= self.duration - 0.01
             self.duration = new
@@ -2476,6 +2520,7 @@ class ReelMaker(QMainWindow):
         self.duration = ms / 1000
         self.clip_in, self.clip_out = 0.0, self.duration
         self.apply_clip(0.0, self.duration)
+        self.hist_reset()   # trims from the last video mean nothing for this one
 
     def apply_clip(self, keep_s, keep_e):
         """Show clip_in..clip_out on the timeline, with the trim handles at keep_s..keep_e (relative)."""
@@ -2582,6 +2627,7 @@ class ReelMaker(QMainWindow):
         self.update_trim_labels()
 
     def update_trim_labels(self):
+        self.note_edit()
         L = self.t_end.value() - self.t_start.value()
         self.len_label.setText(f"Length {fmt_time(L)}" + ("  · over 3:00" if L > 180 else ""))
         span = self.clip_out - self.clip_in
@@ -2989,6 +3035,162 @@ class ReelMaker(QMainWindow):
             self.changed()
 
     # ============================================================ templates
+    # ============================================================ undo / redo
+    # The editor's state is snapshotted shortly after each change settles (a drag counts once you let go,
+    # typing is grouped by pauses). Undo and redo step through those snapshots.
+    HISTORY_LIMIT = 200
+
+    def edit_snapshot(self):
+        layers, imgs = [], []
+        for o in self.layers:
+            if o.kind == "image":
+                layers.append({"kind": "image", "name": o.name, "w": o.w, "x": o.x, "y": o.y,
+                               "opacity": o.opacity, "attach_gap": o.attach_gap, "img": o.img.cacheKey()})
+                imgs.append(o.img)
+            else:
+                layers.append(o.to_dict())
+        state = {
+            "background": (self.bg_mode(), color_hex(self.bg_color)),
+            "preset": self.preset.currentText(),
+            "zone": [self.z[k].value() for k in ("Top", "Bottom", "Left", "Right")],
+            "video": (self.scale.value(), self.dx.value(), self.dy.value(), self.radius.value()),
+            "clamp": self.clamp.isChecked(),
+            "layers": layers,
+            "trim": tuple(round(v, 3) for v in (self.clip_in, self.clip_out, self.t_start.value(), self.t_end.value())),
+            "cover": (self.title.text(), self.title_size.value(), color_hex(self.title_color.color),
+                      self.title_y.value(), self.cover_ovs.isChecked(), self.cover_zoom.value(),
+                      round(self.cover_cx, 4), round(self.cover_cy, 4)),
+        }
+        return {"state": state, "imgs": imgs, "sel": self.sel}
+
+    def note_edit(self):
+        if getattr(self, "_hist_i", -1) >= 0 and not self._hist_restoring:
+            self.hist_timer.start()
+
+    def hist_reset(self):
+        self.hist_timer.stop()
+        self._hist = [self.edit_snapshot()]
+        self._hist_i = 0
+        self.update_undo_buttons()
+
+    def hist_commit(self, force=False):
+        if self._hist_i < 0 or self._hist_restoring:
+            return
+        if not force and (QApplication.mouseButtons() != Qt.NoButton or
+                          (self.canvas.drag is not None and self.view_stack.currentIndex() == 0)):
+            self.hist_timer.start()      # still dragging: record it once the mouse is let go
+            return
+        self.hist_timer.stop()
+        snap = self.edit_snapshot()
+        if snap["state"] == self._hist[self._hist_i]["state"]:
+            self._hist[self._hist_i]["sel"] = snap["sel"]
+            return
+        del self._hist[self._hist_i + 1:]
+        self._hist.append(snap)
+        if len(self._hist) > self.HISTORY_LIMIT:
+            del self._hist[0]
+        self._hist_i = len(self._hist) - 1
+        self.update_undo_buttons()
+
+    def hist_refined_length(self, old, new):
+        """The player corrected the video's length: keep every step's "whole clip" end in step with it."""
+        for snap in self._hist:
+            ci, co, ts, te = snap["state"]["trim"]
+            if abs(co - round(old, 3)) < 0.002:
+                co = round(new, 3)
+                if abs(ci + te - round(old, 3)) < 0.002:
+                    te = round(co - ci, 3)
+                snap["state"]["trim"] = (ci, co, ts, te)
+        QTimer.singleShot(0, self.hist_resync)
+
+    def hist_resync(self):
+        if self._hist_i >= 0 and not self.hist_timer.isActive():
+            self._hist[self._hist_i] = self.edit_snapshot()
+
+    def update_undo_buttons(self):
+        if not hasattr(self, "undo_btn"):
+            return
+        self.undo_btn.setEnabled(self._hist_i > 0)
+        self.redo_btn.setEnabled(0 <= self._hist_i < len(self._hist) - 1)
+
+    def undo(self):
+        self.hist_step(-1)
+
+    def redo(self):
+        self.hist_step(1)
+
+    def hist_step(self, d):
+        if self._hist_i < 0:
+            return
+        if self.canvas.editor:
+            self.canvas.finish_edit()
+        self.hist_commit(force=True)     # an edit still settling counts as its own step
+        i = self._hist_i + d
+        if not 0 <= i < len(self._hist):
+            self.status("Nothing to undo." if d < 0 else "Nothing to redo.")
+            return
+        self._hist_i = i
+        self.restore_snapshot(self._hist[i])
+        self.status("Undone." if d < 0 else "Redone.")
+
+    def restore_snapshot(self, snap):
+        st, imgs = snap["state"], list(snap["imgs"])
+        self._hist_restoring = True
+        try:
+            mode, col = st["background"]
+            self.bg_color = QColor(col)
+            self.bg_swatch.blockSignals(True)
+            self.bg_swatch.setColor(self.bg_color)
+            self.bg_swatch.blockSignals(False)
+            self.bg_seg.setValue(("black", "white", "blur", "custom").index(mode))
+            self.preset.blockSignals(True)
+            self.preset.setCurrentText(st["preset"])
+            self.preset.blockSignals(False)
+            for k, v in zip(("Top", "Bottom", "Left", "Right"), st["zone"]):
+                self.z[k].blockSignals(True)
+                self.z[k].setValue(v)
+                self.z[k].blockSignals(False)
+            for w_, v in zip((self.scale, self.dx, self.dy, self.radius), st["video"]):
+                w_.setValue(v)
+            self.clamp.blockSignals(True)
+            self.clamp.setChecked(st["clamp"])
+            self.clamp.blockSignals(False)
+            layers = []
+            for ld in st["layers"]:
+                if ld["kind"] == "image":
+                    o = ImageLayer(imgs.pop(0), ld["name"])
+                    o.w, o.x, o.y, o.opacity, o.attach_gap = ld["w"], ld["x"], ld["y"], ld["opacity"], ld["attach_gap"]
+                else:
+                    o = TextLayer.from_dict(ld)
+                layers.append(o)
+            self.layers = layers
+            title, tsize, tcol, ty, ovs, zoom, cx, cy = st["cover"]
+            self.title.setText(title)
+            self.title_size.setValue(tsize)
+            self.title_color.setColor(QColor(tcol))
+            self.title_y.setValue(ty)
+            self.cover_ovs.setChecked(ovs)
+            self.cover_zoom.setValue(zoom)
+            self.cover_cx, self.cover_cy = cx, cy
+            ci, co, ts, te = st["trim"]
+            now = tuple(round(v, 3) for v in (self.clip_in, self.clip_out, self.t_start.value(), self.t_end.value()))
+            if now != st["trim"] and self.duration > 0:
+                self.player.pause()
+                self.clip_in, self.clip_out = ci, min(co, self.duration)
+                self.apply_clip(ts, te)
+            sel = snap["sel"]
+            self.sel = sel if 0 <= sel < len(self.layers) else -1
+            self.refresh_list()
+            self.select_layer(self.sel)
+            self.changed()
+            self.cover_changed()
+        finally:
+            self._hist_restoring = False
+            self.hist_timer.stop()
+        if self._hist_i >= 0:   # store what the editor really shows now, so settling doesn't count as an edit
+            self._hist[self._hist_i] = self.edit_snapshot()
+        self.update_undo_buttons()
+
     def template_state(self, name):
         return {
             "version": 1, "name": name, "saved_at": __import__("time").time(),
@@ -3150,6 +3352,7 @@ class ReelMaker(QMainWindow):
         self.lock_btn.setChecked(True)
         self.set_locked(True)
         self.changed()
+        self.hist_reset()
         if not quiet:
             self.status(f"Using template “{self.template_name}”. Layout locked; you can still change the words.")
         return True
