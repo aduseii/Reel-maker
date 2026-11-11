@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: the build tools come from this Ubuntu's packages
     steps:
       - uses: actions/checkout@v4
 
@@ -71,6 +71,7 @@ jobs:
           PY
 
       - name: Install NSIS and MinGW
+        timeout-minutes: 15
         # package mirrors sometimes fail for a moment: retry rather than fail the release
         run: |
           for i in 1 2 3 4; do
