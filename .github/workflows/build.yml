@@ -71,7 +71,14 @@ jobs:
           PY
 
       - name: Install NSIS and MinGW
-        run: sudo apt-get update -q && sudo apt-get install -y -q nsis gcc-mingw-w64-x86-64
+        # package mirrors sometimes fail for a moment: retry rather than fail the release
+        run: |
+          for i in 1 2 3 4; do
+            sudo apt-get update -q -o Acquire::Retries=3 && \
+              sudo apt-get install -y -q -o Acquire::Retries=3 nsis gcc-mingw-w64-x86-64 && break
+            echo "apt failed (try $i), retrying"; sleep 30
+          done
+          command -v makensis && command -v x86_64-w64-mingw32-gcc
 
       - name: Build
         run: bash installer/build.sh
