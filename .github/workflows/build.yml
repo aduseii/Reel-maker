@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04   # pinned: the build tools come from this Ubuntu's packages
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -70,33 +70,83 @@ jobs:
                   print(f"::warning::X import check failed for {link}: {e} | details: {st.get('errors')}")
           PY
 
-      - name: Install NSIS and MinGW
-        timeout-minutes: 15
-        # package mirrors sometimes fail for a moment: retry rather than fail the release
+      - name: Stage the app (Windows Python, Qt, app files)
+        run: STAGE_ONLY=1 bash installer/build.sh && tar czf stage.tgz -C build ReelMaker installer.nsi
+
+      - name: Keep the staged app for the Windows job
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage
+          path: stage.tgz
+          retention-days: 1
+
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      new: ${{ steps.ver.outputs.new }}
+
+  # The launcher and installer are built on Windows, which already has NSIS and MinGW,
+  # so a release doesn't depend on Linux package mirrors.
+  package:
+    needs: build
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage
+
+      - name: Unpack
         run: |
-          for i in 1 2 3 4; do
-            sudo apt-get update -q -o Acquire::Retries=3 && \
-              sudo apt-get install -y -q -o Acquire::Retries=3 nsis gcc-mingw-w64-x86-64 && break
-            echo "apt failed (try $i), retrying"; sleep 30
-          done
-          command -v makensis && command -v x86_64-w64-mingw32-gcc
+          New-Item -ItemType Directory -Force build | Out-Null
+          tar xzf stage.tgz -C build
 
-      - name: Build
-        run: bash installer/build.sh
+      - name: Find NSIS and MinGW
+        run: |
+          $nsis = @("${env:ProgramFiles(x86)}\NSIS", "$env:ProgramFiles\NSIS") | Where-Object { Test-Path "$_\makensis.exe" } | Select-Object -First 1
+          if (-not $nsis) { choco install nsis -y --no-progress; $nsis = "${env:ProgramFiles(x86)}\NSIS" }
+          $gcc = (Get-Command gcc.exe -ErrorAction SilentlyContinue).Source
+          if (-not $gcc -and (Test-Path C:\mingw64\bin\gcc.exe)) { $gcc = "C:\mingw64\bin\gcc.exe" }
+          if (-not $gcc) { choco install mingw -y --no-progress; $gcc = "C:\ProgramData\mingw64\mingw64\bin\gcc.exe" }
+          $bin = Split-Path $gcc
+          "$nsis" | Out-File -Append $env:GITHUB_PATH
+          "$bin" | Out-File -Append $env:GITHUB_PATH
+          & "$nsis\makensis.exe" /VERSION; & $gcc --version | Select-Object -First 1
 
+      - name: Build ReelMaker.exe launcher
+        working-directory: installer/launcher
+        run: |
+          Copy-Item ..\..\app\icon.ico icon.ico
+          windres launcher.rc -O coff -o launcher.res
+          if ($LASTEXITCODE) { exit 1 }
+          gcc -O2 -municode -mwindows -static -s launcher.c launcher.res -o ReelMaker.exe -lshell32
+          if ($LASTEXITCODE) { exit 1 }
+          Copy-Item ReelMaker.exe ..\..\build\ReelMaker\python\ReelMaker.exe
+
+      - name: Build installer
+        working-directory: build
+        run: |
+          makensis /V2 "/DVER=${{ needs.build.outputs.version }}" installer.nsi
+          if ($LASTEXITCODE) { exit 1 }
+          New-Item -ItemType Directory -Force ..\dist | Out-Null
+          Move-Item ReelMakerSetup.exe "..\dist\ReelMakerSetup-${{ needs.build.outputs.version }}.exe"
+          Get-Item ..\dist\*.exe | Format-Table Name, Length
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: ReelMakerSetup-${{ steps.ver.outputs.version }}
+          name: ReelMakerSetup-${{ needs.build.outputs.version }}
           path: dist/*.exe
 
       - name: Publish release
-        if: steps.ver.outputs.new == 'true'
+        if: needs.build.outputs.new == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
+          tag_name: v${{ needs.build.outputs.version }}
           target_commitish: ${{ github.sha }}
-          name: Reel Maker ${{ steps.ver.outputs.version }}
+          name: Reel Maker ${{ needs.build.outputs.version }}
           files: dist/*.exe
           generate_release_notes: true

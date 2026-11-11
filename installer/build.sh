@@ -96,6 +96,13 @@ cp "$ROOT"/app/{reel_maker.py,core.py,cloud.py,x_import.py,launch.pyw,icon.ico,e
 cp -r "$ROOT/app/fonts" "$ROOT/app/emoji" "$STAGE/app/"
 cp "$ROOT/app/icon.ico" "$ROOT/installer/get-ffmpeg.ps1" "$STAGE/"
 
+if [ "${STAGE_ONLY:-}" = "1" ]; then
+  # CI: the launcher and installer are built on a Windows machine from this folder
+  cp "$ROOT/installer/installer.nsi" "$WORK/"
+  echo "==> Staged in build/ (launcher and installer not built)"
+  exit 0
+fi
+
 echo "==> ReelMaker.exe launcher"
 bash "$ROOT/installer/launcher/build.sh"
 cp "$ROOT/installer/launcher/ReelMaker.exe" "$STAGE/python/ReelMaker.exe"
