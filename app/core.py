@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.17.0"
+__version__ = "1.18.0"
 
 import os
 import re
@@ -156,7 +156,7 @@ PRESETS = {
     "Custom": None,
 }
 VIDEO_EXT = "Videos (*.mp4 *.mov *.m4v *.mkv *.avi *.webm *.wmv)"
-IMAGE_EXT = "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"
+IMAGE_EXT = "Images (*.png *.svg *.jpg *.jpeg *.webp *.bmp *.gif)"
 WEIGHTS = [("Regular", 400), ("Medium", 500), ("Semibold", 600), ("Bold", 700),
            ("Heavy", 800), ("Black", 900)]
 
@@ -338,32 +338,88 @@ EMOJI = EmojiSet()
 # ---------------------------------------------------------------- layers
 # ---------------------------------------------------------------- crisp image scaling
 _HQ_CACHE = {}
+SNAP_NATIVE = 0.02     # within 2% of the file's own size, draw it pixel for pixel (no resampling at all)
+
+try:
+    from PySide6.QtSvg import QSvgRenderer
+except ImportError:                                   # pragma: no cover
+    QSvgRenderer = None
 
 
-def draw_image_hq(p, rect, img):
-    """Draw img into rect, shrinking it with an area-averaging filter first.
-    QPainter's own smooth scaling is bilinear, which skips detail when shrinking a lot
-    (a 2000 px logo drawn at 220 px), giving jagged, "chopped" edges."""
+def render_svg(renderer, w, h):
+    img = QImage(max(1, int(w)), max(1, int(h)), QImage.Format_ARGB32_Premultiplied)
+    img.fill(Qt.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    renderer.render(p, QRectF(0, 0, img.width(), img.height()))
+    p.end()
+    return img
+
+
+def load_image_data(data, name=""):
+    """(image, svg renderer or None) from a file's bytes. SVG logos stay vectors: they're redrawn
+    at the exact size they're shown, so they're sharp at any size."""
+    head = bytes(data[:4096]).lstrip()
+    if QSvgRenderer and (name.lower().endswith((".svg", ".svgz")) or
+                         (head.startswith((b"<svg", b"<?xml", b"<!--")) and b"<svg" in head)):
+        r = QSvgRenderer(QByteArray(bytes(data)))
+        if r.isValid():
+            vb = r.viewBoxF()
+            sw, sh = (vb.width(), vb.height()) if vb.isValid() and vb.width() > 0 and vb.height() > 0 \
+                else (r.defaultSize().width(), r.defaultSize().height())
+            ar = sw / max(1e-6, sh) if sw and sh else 1.0
+            pw, ph = (1600, max(1, round(1600 / ar))) if ar >= 1 else (max(1, round(1600 * ar)), 1600)
+            return render_svg(r, pw, ph), r
+    img = QImage.fromData(QByteArray(bytes(data)))
+    if img.isNull():
+        return None, None
+    return img.convertToFormat(QImage.Format_ARGB32_Premultiplied), None
+
+
+def draw_image_hq(p, rect, img, svg=None):
+    """Draw img into rect as sharply as possible:
+    - SVG logos are redrawn from their vectors at the exact pixel size;
+    - within 2% of the file's own size the file's pixels are copied 1:1 (no resampling);
+    - otherwise it's resized once with an area-averaging filter (QPainter's own smooth scaling is
+      bilinear and skips detail when shrinking, giving jagged edges);
+    - and it's always placed on whole pixels, because drawing at a fraction of a pixel
+      re-samples every pixel and softens edges."""
     t = p.worldTransform()
     if t.m12() or t.m21():                      # rotated/sheared: let Qt handle it
         p.drawImage(rect, img)
         return
     dev = t.mapRect(rect)
     tw, th = max(1, round(dev.width())), max(1, round(dev.height()))
-    if tw >= img.width() and th >= img.height():
-        p.drawImage(rect, img)                  # enlarging: nothing to gain
-        return
-    key = (img.cacheKey(), tw, th)
-    small = _HQ_CACHE.get(key)
-    if small is None:
-        small = img.scaled(tw, th, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        if len(_HQ_CACHE) > 600:
-            _HQ_CACHE.clear()
-        _HQ_CACHE[key] = small
+    if svg is None and abs(tw - img.width()) <= max(1.0, img.width() * SNAP_NATIVE) \
+            and abs(th - img.height()) <= max(1.0, img.height() * SNAP_NATIVE):
+        tw, th, src = img.width(), img.height(), img
+    else:
+        key = (img.cacheKey(), tw, th, svg is not None)
+        src = _HQ_CACHE.get(key)
+        if src is None:
+            src = render_svg(svg, tw, th) if svg is not None else \
+                img.scaled(tw, th, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            if len(_HQ_CACHE) > 600:
+                _HQ_CACHE.clear()
+            _HQ_CACHE[key] = src
+    c = dev.center()
     p.save()
     p.resetTransform()
-    p.drawImage(QRectF(dev.x(), dev.y(), tw, th), small)
+    p.drawImage(QPointF(round(c.x() - tw / 2), round(c.y() - th / 2)), src)
     p.restore()
+
+
+def crisp_widths(img, max_w):
+    """Widths at which a picture is sharpest: its own size, then exactly 1/2, 1/3, 1/4 … of it
+    (whole-number shrinks average neat blocks of pixels). Largest first, only those up to max_w."""
+    out = []
+    for k in range(1, 41):
+        if img.width() % k == 0 and img.height() % k == 0 or k == 1:
+            w = img.width() / k
+            if w <= max_w + 0.01 and w >= 30:
+                out.append(w)
+    return out
 
 
 def color_hex(c):
@@ -374,8 +430,10 @@ class ImageLayer:
     """A logo or photo. (x, y) is the centre."""
     kind = "image"
 
-    def __init__(self, img, path):
+    def __init__(self, img, path, data=None, svg=None):
         self.img = img
+        self.data = data          # the file exactly as added: templates keep it byte for byte
+        self.svg = svg            # a vector logo: drawn from its shapes at any size
         self.name = os.path.basename(path)
         self.w = 240.0
         self.x = W / 2
@@ -387,19 +445,28 @@ class ImageLayer:
         self.x = left + self.w / 2
         self.y = top + self.h / 2
 
-    def to_dict(self):
+    def file_bytes(self):
+        if self.data:
+            return bytes(self.data)
         buf = QBuffer()
         buf.open(QIODevice.WriteOnly)
         self.img.save(buf, "PNG")
+        return bytes(buf.data())
+
+    def to_dict(self):
+        # "png" holds the original file (PNG, JPEG, WebP or SVG), so a template never re-compresses it
         return {"kind": "image", "name": self.name, "w": self.w, "x": self.x, "y": self.y,
-                "opacity": self.opacity, "attach_gap": self.attach_gap,
-                "png": base64.b64encode(bytes(buf.data())).decode()}
+                "opacity": self.opacity, "attach_gap": self.attach_gap, "svg": self.svg is not None,
+                "png": base64.b64encode(self.file_bytes()).decode()}
 
     @classmethod
     def from_dict(cls, d):
-        img = QImage.fromData(QByteArray(base64.b64decode(d["png"])), "PNG")
-        img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-        o = cls(img, d.get("name", "image.png"))
+        data = base64.b64decode(d["png"])
+        name = d.get("name", "image.png")
+        img, svg = load_image_data(data, name if d.get("svg") or name.lower().endswith(".svg") else "")
+        if img is None:
+            raise ValueError("unreadable image")
+        o = cls(img, name, data, svg)
         o.w, o.x, o.y, o.opacity = d["w"], d["x"], d["y"], d.get("opacity", 1.0)
         o.attach_gap = d.get("attach_gap")
         return o
@@ -417,7 +484,7 @@ class ImageLayer:
     def draw(self, p):
         p.save()
         p.setOpacity(self.opacity)
-        draw_image_hq(p, self.rect(), self.img)
+        draw_image_hq(p, self.rect(), self.img, self.svg)
         p.restore()
 
 

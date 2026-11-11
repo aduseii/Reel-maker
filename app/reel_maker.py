@@ -27,7 +27,7 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 import x_import  # noqa: E402  (X/Twitter link import)
 from core import (__version__, check_for_update, download_update, W, H, ACCENT, DEFAULT_FONT, PRESETS, VIDEO_EXT, IMAGE_EXT, WEIGHTS, APPDATA,
                   TEMPLATE_DIR, EMOJI, ImageLayer, TextLayer, color_hex, res_path, fmt_time,
-                  find_ffmpeg, download_ffmpeg)
+                  find_ffmpeg, download_ffmpeg, load_image_data, crisp_widths)
 
 # ---------------------------------------------------------------- theme
 C = dict(bg="#0D0E10", panel="#141518", raised="#1C1D21", raised2="#26272C", field="#0F1012",
@@ -1874,6 +1874,15 @@ class ReelMaker(QMainWindow):
         self.lowres_note.setStyleSheet(f"color:{C['accent']}")
         self.lowres_note.hide()
         v.addWidget(self.lowres_note)
+        self.crisp_note = label("", "faint")
+        self.crisp_note.setWordWrap(True)
+        v.addWidget(self.crisp_note)
+        self.crisp_btn = QPushButton("Crispest size")
+        self.crisp_btn.setToolTip("Resize to the nearest size where the picture's pixels map exactly onto the "
+                                  "reel's (its own size, or exactly ½, ⅓, ¼ … of it): the sharpest a picture can be")
+        self.crisp_btn.setCursor(Qt.PointingHandCursor)
+        self.crisp_btn.clicked.connect(self.crispest_size)
+        v.addWidget(row(self.crisp_btn, None))
         self.replace_btn = QPushButton("Replace image…")
         self.replace_btn.setToolTip("Swap the picture but keep its exact size and position")
         self.replace_btn.clicked.connect(self.replace_image)
@@ -2738,20 +2747,27 @@ class ReelMaker(QMainWindow):
             self.add_image(p)
 
     def load_image(self, path):
-        img = QImage(path)
-        if img.isNull():
+        """(image, original file bytes, svg renderer) or None."""
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            data = b""
+        img, svg = load_image_data(data, path) if data else (None, None)
+        if img is None:
             self.status(f"Couldn't read {os.path.basename(path)}")
             return None
-        return img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+        return img, data, svg
 
     def add_image(self, path):
         if self.locked:
             return
-        img = self.load_image(path)
-        if img is None:
+        got = self.load_image(path)
+        if got is None:
             return
-        o = ImageLayer(img, path)
-        o.w = min(self.zone().width() * 0.3, float(img.width()))
+        img, data, svg = got
+        o = ImageLayer(img, path, data, svg)
+        o.w = self.zone().width() * 0.3 if svg else min(self.zone().width() * 0.3, float(img.width()))
         self.layers.append(o)
         self.place_layer("tr" if sum(l.kind == "image" for l in self.layers) == 1 else "c", o)
         self.refresh_list()
@@ -2762,12 +2778,12 @@ class ReelMaker(QMainWindow):
         if not o or o.kind != "image":
             return
         path, _ = QFileDialog.getOpenFileName(self, "Replace image", "", IMAGE_EXT)
-        img = self.load_image(path) if path else None
-        if img is None:
+        got = self.load_image(path) if path else None
+        if got is None:
             return
-        top_left = o.rect().topLeft()
         cx, cy = o.x, o.y
-        o.img, o.name = img, os.path.basename(path)
+        o.img, o.data, o.svg = got
+        o.name = os.path.basename(path)
         o.x, o.y = cx, cy   # keep centre and width; height follows the new picture
         self.refresh_list()
         self.update_lowres_note(o)
@@ -2892,7 +2908,46 @@ class ReelMaker(QMainWindow):
         self.clamp_layer(o)
         self.changed()
 
+    def crispest_size(self):
+        o = self.selected()
+        if not o or o.kind != "image" or o.svg is not None or self.locked:
+            return
+        z = self.zone()
+        max_w = min(z.width(), z.height() * o.img.width() / max(1, o.img.height()))
+        sizes = crisp_widths(o.img, max_w) or [o.img.width()]
+        w = min(sizes, key=lambda s: abs(s - o.w))
+        o.w = float(w)
+        self.clamp_layer(o)
+        self.reapply_attachments()
+        self.sync_layer_controls()
+        self.changed()
+        self.record()
+        k = o.img.width() / w
+        self.status(f"{o.name} is now {int(w)} px wide: " + ("its own size, pixel for pixel." if abs(k - 1) < 1e-6
+                    else f"exactly 1/{round(k)} of its own size, the sharpest way to shrink it."))
+
+    def update_crisp_note(self, o):
+        if o.svg is not None:
+            self.crisp_note.setText("Vector logo (SVG): drawn from its shapes at the exact size shown, "
+                                    "so it's sharp at any size.")
+            self.crisp_btn.hide()
+            return
+        self.crisp_btn.show()
+        ratio = o.w / max(1, o.img.width())
+        if abs(ratio - 1) <= 0.02:
+            self.crisp_note.setText(f"Pixel-perfect: shown at its own size ({o.img.width()} px), no resizing.")
+        elif ratio < 1:
+            self.crisp_note.setText(f"Shown at {ratio * 100:.0f}% of its own size ({o.img.width()} px), "
+                                    "shrunk with a high-quality filter. “Crispest size” snaps it to an exact "
+                                    "fraction for the cleanest edges.")
+        else:
+            self.crisp_note.setText("")
+
     def update_lowres_note(self, o):
+        self.update_crisp_note(o)
+        if o.svg is not None:
+            self.lowres_note.hide()
+            return
         # shown larger than the file's real pixels = soft edges no export setting can fix
         if o.w > o.img.width() * 1.1:
             self.lowres_note.setText(f"This image is only {o.img.width()} px wide but is shown {int(o.w)} px wide, "
@@ -3075,7 +3130,7 @@ class ReelMaker(QMainWindow):
         if o.kind != "image":
             return o.to_dict()
         key = str(o.img.cacheKey())
-        self._img_store[key] = o.img
+        self._img_store[key] = (o.img, o.data, o.svg)
         return {"kind": "image", "name": o.name, "w": o.w, "x": o.x, "y": o.y, "opacity": o.opacity,
                 "attach_gap": o.attach_gap, "img_ref": key}
 
@@ -3083,7 +3138,8 @@ class ReelMaker(QMainWindow):
         if ld.get("kind") != "image":
             return TextLayer.from_dict(ld)
         if "img_ref" in ld:
-            o = ImageLayer(self._img_store[ld["img_ref"]], ld.get("name", "image.png"))
+            o = ImageLayer(*((self._img_store[ld["img_ref"]][0], ld.get("name", "image.png"))
+                             + self._img_store[ld["img_ref"]][1:]))
             o.w, o.x, o.y, o.opacity = ld["w"], ld["x"], ld["y"], ld.get("opacity", 1.0)
             o.attach_gap = ld.get("attach_gap")
             return o
@@ -3392,6 +3448,7 @@ class ReelMaker(QMainWindow):
         for w_ in self.text_style_controls:
             w_.setEnabled(not lk)
         self.img_size.setEnabled(not lk)
+        self.crisp_btn.setEnabled(not lk)
         if lk:
             o = self.selected()
             self.txt_pad.setEnabled(False)
@@ -4305,7 +4362,7 @@ class ReelMaker(QMainWindow):
         for url in md.urls():
             path = url.toLocalFile()
             ext = os.path.splitext(path)[1].lower()
-            if ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
+            if ext in (".png", ".svg", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
                 self.add_image(path)
             elif ext in (".ttf", ".otf"):
                 fid = QFontDatabase.addApplicationFont(path)

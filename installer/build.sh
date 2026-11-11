@@ -48,7 +48,7 @@ keep = {
         "__init__.py", "_config.py", "_git_pyside_version.py", "py.typed", "PySide6_Essentials.json",
         "pyside6.abi3.dll", "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Network.dll",
         "Qt6Multimedia.dll", "QtCore.pyd", "QtGui.pyd", "QtWidgets.pyd", "QtNetwork.pyd",
-        "QtMultimedia.pyd", "support/__init__.py", "support/deprecated.py", "support/generate_pyi.py",
+        "QtMultimedia.pyd", "Qt6Svg.dll", "QtSvg.pyd", "support/__init__.py", "support/deprecated.py", "support/generate_pyi.py",
         "plugins/platforms/qwindows.dll", "plugins/styles/qmodernwindowsstyle.dll",
         "plugins/imageformats/qgif.dll", "plugins/imageformats/qico.dll",
         "plugins/imageformats/qjpeg.dll", "plugins/imageformats/qwebp.dll",
