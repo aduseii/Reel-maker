@@ -13,7 +13,7 @@ import re
 import sys
 import tempfile
 
-from PySide6.QtCore import Qt, QUrl, QRectF, QPointF, QTimer, QProcess, Signal, QSettings, QSize
+from PySide6.QtCore import Qt, QUrl, QRectF, QPointF, QTimer, QProcess, Signal, QSettings, QSize, QObject, QEvent
 from PySide6.QtGui import (QDesktopServices, QImage, QPainter, QColor, QPen, QFont, QPainterPath, QPixmap, QIcon, QLinearGradient,
                            QKeySequence, QShortcut, QFontMetricsF, QFontDatabase, QPalette, QAction)
 from PySide6.QtWidgets import (
@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QSpinBox, QDoubleSpinBox, QSlider, QCheckBox, QLabel, QListWidget,
     QListWidgetItem, QFileDialog, QColorDialog, QLineEdit, QProgressBar, QScrollArea, QMessageBox,
     QSizePolicy, QFrame, QToolButton, QPlainTextEdit, QFontComboBox, QStackedWidget, QTabWidget,
-    QMenu, QInputDialog, QProgressDialog)
+    QMenu, QInputDialog, QProgressDialog, QDialog, QAbstractSpinBox, QAbstractSlider, QAbstractScrollArea)
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 
 import x_import  # noqa: E402  (X/Twitter link import)
@@ -298,6 +298,24 @@ def icon(kind, color=C["text"], size=20):
         path.lineTo(15.8, 7.4)
         path.lineTo(12, 7.9)
         p.drawPath(path)
+    elif kind in ("undo", "redo"):
+        if kind == "redo":
+            p.translate(24, 0)
+            p.scale(-1, 1)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        path = QPainterPath()
+        path.moveTo(6, 9.5)
+        path.lineTo(14.5, 9.5)
+        path.cubicTo(17.8, 9.5, 19.5, 11.6, 19.5, 14.25)
+        path.cubicTo(19.5, 16.9, 17.8, 19, 14.5, 19)
+        path.lineTo(10, 19)
+        p.drawPath(path)
+        head = QPainterPath()
+        head.moveTo(9.5, 5.5)
+        head.lineTo(5.5, 9.5)
+        head.lineTo(9.5, 13.5)
+        p.drawPath(head)
     elif kind == "link":
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
@@ -415,6 +433,37 @@ class Swatch(QToolButton):
         if c.isValid():
             self.setColor(c)
             self.colorChanged.emit(c)
+
+
+class WheelGuard(QObject):
+    """Number boxes, dropdowns and sliders only react to the mouse wheel after you've clicked them.
+    Until then the wheel scrolls the panel underneath, so scrolling past a control can't change it."""
+    GUARDED = ()
+
+    def eventFilter(self, obj, e):
+        t = e.type()
+        if t == QEvent.Polish and isinstance(obj, self.GUARDED) and obj.focusPolicy() == Qt.WheelFocus:
+            obj.setFocusPolicy(Qt.StrongFocus)         # the wheel alone never selects a control
+        elif t == QEvent.Wheel and isinstance(obj, QWidget):
+            w = obj
+            while w is not None and not isinstance(w, self.GUARDED):
+                if w.isWindow():
+                    return False
+                w = w.parentWidget()
+            if w is None or w.hasFocus() or (isinstance(w, QComboBox) and w.view().isVisible()):
+                return False                            # clicked first: the wheel may change it
+            area = w.parentWidget()
+            while area is not None and not isinstance(area, QAbstractScrollArea):
+                area = area.parentWidget()
+            if area is not None:
+                sb = area.verticalScrollBar()
+                d = e.pixelDelta().y() or int(e.angleDelta().y() / 120 * 48)
+                sb.setValue(sb.value() - d)
+            return True
+        return False
+
+
+WheelGuard.GUARDED = (QAbstractSpinBox, QComboBox, QAbstractSlider)
 
 
 def spin(lo, hi, val=0, suffix="", step=1):
@@ -1241,6 +1290,10 @@ class CoverCanvas(QWidget):
         self.drag = None
 
     def wheelEvent(self, e):
+        if not (e.modifiers() & Qt.ControlModifier):
+            self.app.status("Hold Ctrl and scroll to zoom the cover (or use the Zoom slider).")
+            e.ignore()
+            return
         step = 8 if e.angleDelta().y() > 0 else -8
         self.app.cover_zoom.setValue(self.app.cover_zoom.value() + step)
 
@@ -1463,6 +1516,18 @@ class ReelMaker(QMainWindow):
         sc.activated.connect(self.space_pressed)
         dl = QShortcut(QKeySequence(Qt.Key_Delete), self.canvas)
         dl.activated.connect(self.remove_layer)
+        QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo)
+        QShortcut(QKeySequence("Ctrl+Y"), self, activated=self.redo)
+        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self.redo)
+        self.history, self.future = [], []
+        self._img_store = {}
+        self._restoring = False
+        self.hist_timer = QTimer(self)
+        self.hist_timer.setSingleShot(True)
+        self.hist_timer.setInterval(350)
+        self.hist_timer.timeout.connect(self.record)
+        QApplication.instance().installEventFilter(self)
+        QTimer.singleShot(0, self.reset_history)
         QShortcut(QKeySequence("Ctrl+O"), self, activated=self.open_video)
         QShortcut(QKeySequence("Ctrl+E"), self, activated=self.export)
 
@@ -1510,6 +1575,21 @@ class ReelMaker(QMainWindow):
         self.lock_btn.setCursor(Qt.PointingHandCursor)
         self.lock_btn.toggled.connect(self.set_locked)
         l.addWidget(self.lock_btn)
+        self.undo_btn = QToolButton()
+        self.redo_btn = QToolButton()
+        for b, kind, tip, fn in ((self.undo_btn, "undo", "Undo (Ctrl+Z)", self.undo),
+                                 (self.redo_btn, "redo", "Redo (Ctrl+Y)", self.redo)):
+            b.setObjectName("ghost")
+            ic = QIcon()
+            ic.addPixmap(icon(kind, C["text"], 18).pixmap(36, 36), QIcon.Normal)
+            ic.addPixmap(icon(kind, C["faint"], 18).pixmap(36, 36), QIcon.Disabled)
+            b.setIcon(ic)
+            b.setIconSize(QSize(18, 18))
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tip)
+            b.setEnabled(False)
+            b.clicked.connect(fn)
+            l.addWidget(b)
 
         self.update_btn = QToolButton()
         self.update_btn.setObjectName("ghost")
@@ -2279,6 +2359,7 @@ class ReelMaker(QMainWindow):
 
     def load_video(self, path):
         self.src_path = path
+        QTimer.singleShot(0, self.reset_history)
         self._pending_x = None
         self._clip_src = None          # the timeline/trim must be reset for this video
         # clear the previous video's timeline straight away; the new length arrives once it loads
@@ -2989,7 +3070,26 @@ class ReelMaker(QMainWindow):
             self.changed()
 
     # ============================================================ templates
-    def template_state(self, name):
+    def light_layer(self, o):
+        """A layer for the undo history: images are kept in memory by reference, not re-encoded."""
+        if o.kind != "image":
+            return o.to_dict()
+        key = str(o.img.cacheKey())
+        self._img_store[key] = o.img
+        return {"kind": "image", "name": o.name, "w": o.w, "x": o.x, "y": o.y, "opacity": o.opacity,
+                "attach_gap": o.attach_gap, "img_ref": key}
+
+    def layer_from_dict(self, ld):
+        if ld.get("kind") != "image":
+            return TextLayer.from_dict(ld)
+        if "img_ref" in ld:
+            o = ImageLayer(self._img_store[ld["img_ref"]], ld.get("name", "image.png"))
+            o.w, o.x, o.y, o.opacity = ld["w"], ld["x"], ld["y"], ld.get("opacity", 1.0)
+            o.attach_gap = ld.get("attach_gap")
+            return o
+        return ImageLayer.from_dict(ld)
+
+    def template_state(self, name, light=False):
         return {
             "version": 1, "name": name, "saved_at": __import__("time").time(),
             "background": {"mode": self.bg_mode(), "color": color_hex(self.bg_color)},
@@ -2998,7 +3098,7 @@ class ReelMaker(QMainWindow):
             "video": {"scale": self.scale.value(), "dx": self.dx.value(), "dy": self.dy.value(),
                       "radius": self.radius.value()},
             "clamp": self.clamp.isChecked(),
-            "layers": [o.to_dict() for o in self.layers],
+            "layers": [self.light_layer(o) if light else o.to_dict() for o in self.layers],
             "cover": {"title": self.title.text(), "title_size": self.title_size.value(),
                       "title_color": color_hex(self.title_color.color), "title_y": self.title_y.value(),
                       "include_layers": self.cover_ovs.isChecked(), "zoom": self.cover_zoom.value(),
@@ -3103,6 +3203,22 @@ class ReelMaker(QMainWindow):
                 QMessageBox.warning(self, "Templates", f"Couldn't open that template:\n{e}")
             return False
         self.set_locked(False)
+        self.apply_state(d)
+        self.template_name = d.get("name") or os.path.splitext(os.path.basename(path))[0]
+        self.settings.setValue("last_template", path)
+        self.sel = -1
+        self.refresh_list()
+        self.select_layer(-1)
+        self.lock_btn.setChecked(True)
+        self.set_locked(True)
+        self.changed()
+        self.record()
+        if not quiet:
+            self.status(f"Using template “{self.template_name}”. Layout locked; you can still change the words.")
+        return True
+
+    def apply_state(self, d):
+        """Set the layout, layers, cover and export settings from a template / history snapshot."""
         bg = d.get("background", {})
         self.bg_color = QColor(bg.get("color", "#FF1F6F5C"))
         self.bg_swatch.setColor(self.bg_color)
@@ -3125,7 +3241,7 @@ class ReelMaker(QMainWindow):
         self.layers = []
         for ld in d.get("layers", []):
             try:
-                self.layers.append(ImageLayer.from_dict(ld) if ld.get("kind") == "image" else TextLayer.from_dict(ld))
+                self.layers.append(self.layer_from_dict(ld))
             except Exception:
                 pass
         cv = d.get("cover", {})
@@ -3142,17 +3258,84 @@ class ReelMaker(QMainWindow):
         self.save_cover_too.setChecked(ex.get("save_cover", True))
         self.cover_first.setChecked(ex.get("cover_first", True))
         self.cover_embed.setChecked(ex.get("cover_embed", True))
-        self.template_name = d.get("name") or os.path.splitext(os.path.basename(path))[0]
-        self.settings.setValue("last_template", path)
-        self.sel = -1
-        self.refresh_list()
-        self.select_layer(-1)
-        self.lock_btn.setChecked(True)
-        self.set_locked(True)
-        self.changed()
-        if not quiet:
-            self.status(f"Using template “{self.template_name}”. Layout locked; you can still change the words.")
-        return True
+
+    # ============================================================ undo / redo
+    def snapshot(self):
+        d = self.template_state("", light=True)
+        d.pop("saved_at", None)
+        d["trim"] = [round(self.clip_in, 3), round(self.clip_out, 3),
+                     round(self.t_start.value(), 3), round(self.t_end.value(), 3)]
+        return json.dumps(d, sort_keys=True)
+
+    def reset_history(self):
+        """Start a fresh history (a new video): what you see now is the starting point."""
+        self.hist_timer.stop()
+        self._img_store = {}
+        self.history, self.future = [self.snapshot()], []
+        self.update_undo_ui()
+
+    def record(self):
+        """Add the current state to the history if anything changed since the last step."""
+        if self._restoring or not self.history:
+            return
+        snap = self.snapshot()
+        if snap != self.history[-1]:
+            self.history.append(snap)
+            del self.history[:-150]
+            self.future.clear()
+        self.update_undo_ui()
+
+    def update_undo_ui(self):
+        self.undo_btn.setEnabled(len(self.history) > 1)
+        self.redo_btn.setEnabled(bool(self.future))
+
+    def undo(self):
+        self.record()                     # keep anything still waiting to be recorded
+        if len(self.history) < 2:
+            return
+        self.future.append(self.history.pop())
+        self.restore(self.history[-1], "Undone.")
+
+    def redo(self):
+        self.record()
+        if not self.future:
+            return
+        snap = self.future.pop()
+        self.history.append(snap)
+        self.restore(snap, "Redone.")
+
+    def restore(self, snap, msg):
+        self.hist_timer.stop()
+        self._restoring = True
+        try:
+            if self.canvas.editor:
+                self.canvas.finish_edit()
+            d = json.loads(snap)
+            sel = self.sel
+            locked = self.locked
+            self.set_locked(False)
+            self.apply_state(d)
+            ci, co, ts, te = d.get("trim", [self.clip_in, self.clip_out, 0, 0])
+            cur = [round(self.clip_in, 3), round(self.clip_out, 3),
+                   round(self.t_start.value(), 3), round(self.t_end.value(), 3)]
+            if self.duration > 0 and [ci, co, ts, te] != cur:
+                self.clip_in, self.clip_out = ci, co
+                self.apply_clip(ts, te)
+            self.refresh_list()
+            self.select_layer(sel if 0 <= sel < len(self.layers) else -1)
+            self.set_locked(locked)
+            self.changed()
+            self.render_cover_preview()
+        finally:
+            self._restoring = False
+        self.update_undo_ui()
+        self.status(msg)
+
+    def eventFilter(self, obj, e):
+        # an edit is finished when a click, key or wheel turn ends: note the result shortly after
+        if e.type() in (QEvent.MouseButtonRelease, QEvent.KeyRelease, QEvent.Wheel) and not self._restoring:
+            self.hist_timer.start()
+        return False
 
     def restore_last_template(self):
         path = self.settings.value("last_template", "", type=str)
@@ -4074,6 +4257,7 @@ class ReelMaker(QMainWindow):
         post, self._pending_x = self._pending_x, None
         who = f"@{post['uploader_id']}" if post.get("uploader_id") else "the post"
         note = self.fill_caption(post.get("caption") or "")
+        self.record()
         self.tabs.setCurrentIndex(2)
         self.status(f"Imported {who}'s video. {note}Pick a cover, then Export reel.")
 
@@ -4197,6 +4381,8 @@ def main():
     app.setFont(f)
     assets = build_style_assets(tempfile.mkdtemp(prefix="reelmaker_ui_"))
     app.setStyleSheet(stylesheet(assets))
+    app._wheel_guard = WheelGuard(app)
+    app.installEventFilter(app._wheel_guard)
     ico = res_path("icon.ico")
     if os.path.exists(ico):
         app.setWindowIcon(QIcon(ico))
