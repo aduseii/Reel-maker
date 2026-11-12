@@ -30,6 +30,8 @@ jobs:
           set -o pipefail
           xcodebuild -project ReelMaker.xcodeproj -scheme ReelMaker -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            MARKETING_VERSION="$(sed -n 's/.*MARKETING_VERSION: "\(.*\)"/\1/p' project.yml).${{ github.run_number }}" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tee build.log | grep -E "error:|warning: unre|BUILD" || true
           if ! grep -q "BUILD SUCCEEDED" build.log; then
             # compiler errors become annotations so they can be read without the full log
@@ -56,7 +58,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ver=$(sed -n 's/.*MARKETING_VERSION: "\(.*\)"/\1/p' project.yml)
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/ios"
+          # an AltStore source: add $base/altstore-source.json in AltStore → Sources to get updates there
+          python3 - "$ver" "${{ github.run_number }}" "$(stat -f %z ReelMaker.ipa)" "$base" "$GITHUB_REPOSITORY" <<'PY'
+          import json, sys, datetime
+          ver, build, size, base, repo = sys.argv[1:]
+          v = f"{ver}.{build}"
+          src = {"name": "Reel Maker", "identifier": "com.aduseii.reelmaker.source",
+                 "apps": [{"name": "Reel Maker", "bundleIdentifier": "com.aduseii.reelmaker", "developerName": "aduseii",
+                           "localizedDescription": "Turn a 16:9 video into an Instagram reel with your saved templates.",
+                           "iconURL": f"https://raw.githubusercontent.com/{repo}/main/ios/ReelMaker/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
+                           "tintColor": "FFA53A",
+                           "version": v, "versionDate": datetime.date.today().isoformat(),
+                           "downloadURL": f"{base}/ReelMaker.ipa", "size": int(size),
+                           "versions": [{"version": v, "buildVersion": build,
+                                         "date": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                         "downloadURL": f"{base}/ReelMaker.ipa", "size": int(size), "minOSVersion": "16.0"}]}],
+                 "news": []}
+          json.dump(src, open("altstore-source.json", "w"), indent=1)
+          PY
           gh release delete ios -R "$GITHUB_REPOSITORY" --cleanup-tag -y 2>/dev/null || true
-          gh release create ios ReelMaker.ipa -R "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
-            --title "Reel Maker for iPhone $ver (build ${{ github.run_number }})" \
-            --notes "Install with Sideloadly using your Apple ID. With a free Apple ID, reinstall every 7 days."
+          gh release create ios ReelMaker.ipa altstore-source.json -R "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+            --title "Reel Maker for iPhone $ver.${{ github.run_number }}" \
+            --notes "Install with AltStore (My Apps → +) or Sideloadly. AltStore source for updates: $base/altstore-source.json"
