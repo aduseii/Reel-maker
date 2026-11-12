@@ -1,0 +1,31 @@
+name: X CORS check (temporary)
+on:
+  push:
+    paths: [.github/workflows/x-cors-check.yml]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Do X's embed data and video files allow other websites to read them?
+        run: |
+          ORIGIN="https://aduseii.github.io"
+          for id in 1790637656616943991 1578353380363501568; do
+            tok=$(node -e "console.log(((Number('$id') / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, ''))")
+            url="https://cdn.syndication.twimg.com/tweet-result?id=$id&token=$tok&lang=en"
+            curl -s -D h.txt -o r.json -H "Origin: $ORIGIN" "$url"
+            code=$(head -1 h.txt | tr -d '\r'); acao=$(grep -i '^access-control-allow-origin' h.txt | tr -d '\r')
+            vid=$(python3 -c "
+          import json
+          try:
+              d=json.load(open('r.json'))
+              v=[vv for m in d.get('mediaDetails') or [] for vv in (m.get('video_info') or {}).get('variants', []) if vv.get('content_type')=='video/mp4']
+              print(max(v, key=lambda x: x.get('bitrate',0))['url'] if v else '')
+          except Exception as e: print('')
+          ")
+            echo "::notice::post $id embed data: $code | ${acao:-no CORS header} | video found: ${vid:+yes}"
+            if [ -n "$vid" ]; then
+              curl -s -D v.txt -o /dev/null -r 0-1023 -H "Origin: $ORIGIN" "$vid"
+              vcode=$(head -1 v.txt | tr -d '\r'); vacao=$(grep -i '^access-control-allow-origin' v.txt | tr -d '\r')
+              echo "::notice::post $id video file: $vcode | ${vacao:-no CORS header}"
+            fi
+          done
