@@ -1,0 +1,62 @@
+name: iPhone app
+
+# Builds an unsigned ReelMaker.ipa on a Mac and publishes it as the "ios" pre-release
+# (pre-releases don't count as the "latest" release the Windows updater reads).
+# Install it with Sideloadly, which signs it with your own Apple ID.
+on:
+  push:
+    branches: [main]
+    paths: ["ios/**", "app/fonts/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate the Xcode project
+        working-directory: ios
+        run: |
+          brew install xcodegen >/dev/null
+          xcodegen generate
+
+      - name: Build
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -project ReelMaker.xcodeproj -scheme ReelMaker -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tee build.log | grep -E "error:|warning: unre|BUILD" || true
+          if ! grep -q "BUILD SUCCEEDED" build.log; then
+            # compiler errors become annotations so they can be read without the full log
+            grep -E "^/.*error:" build.log | sort -u | head -40 | while IFS= read -r line; do
+              file=$(echo "$line" | cut -d: -f1 | sed "s#^$PWD/##"); ln=$(echo "$line" | cut -d: -f2)
+              msg=$(echo "$line" | sed -E 's/^[^:]*:[0-9]+:[0-9]+: error: //')
+              echo "::error file=ios/$file,line=$ln::$msg"
+            done
+            grep -E "error:" build.log | grep -v "^/" | sort -u | head -10 | sed 's/^/::error::/'
+            exit 1
+          fi
+
+      - name: Package the .ipa
+        working-directory: ios
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/ReelMaker.app Payload/
+          zip -qry ReelMaker.ipa Payload
+          ls -la ReelMaker.ipa
+
+      - name: Publish the "ios" pre-release
+        working-directory: ios
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(sed -n 's/.*MARKETING_VERSION: "\(.*\)"/\1/p' project.yml)
+          gh release delete ios -R "$GITHUB_REPOSITORY" --cleanup-tag -y 2>/dev/null || true
+          gh release create ios ReelMaker.ipa -R "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+            --title "Reel Maker for iPhone $ver (build ${{ github.run_number }})" \
+            --notes "Install with Sideloadly using your Apple ID. With a free Apple ID, reinstall every 7 days."

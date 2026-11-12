@@ -1,0 +1,30 @@
+name: ReelMaker
+options:
+  bundleIdPrefix: com.aduseii
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    ENABLE_BITCODE: "NO"
+targets:
+  ReelMaker:
+    type: application
+    platform: iOS
+    sources:
+      - path: ReelMaker
+      - path: ../app/fonts
+        includes: ["*.ttf"]
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aduseii.reelmaker
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: ReelMaker/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"

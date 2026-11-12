@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.18.0"
+__version__ = "1.18.1"
 
 import os
 import re
@@ -455,9 +455,18 @@ class ImageLayer:
 
     def to_dict(self):
         # "png" holds the original file (PNG, JPEG, WebP or SVG), so a template never re-compresses it
-        return {"kind": "image", "name": self.name, "w": self.w, "x": self.x, "y": self.y,
-                "opacity": self.opacity, "attach_gap": self.attach_gap, "svg": self.svg is not None,
-                "png": base64.b64encode(self.file_bytes()).decode()}
+        d = {"kind": "image", "name": self.name, "w": self.w, "x": self.x, "y": self.y,
+             "opacity": self.opacity, "attach_gap": self.attach_gap, "svg": self.svg is not None,
+             "png": base64.b64encode(self.file_bytes()).decode()}
+        if self.svg is not None:
+            # a ready-drawn copy for apps that can't draw SVG (the iPhone app), 2x the size shown
+            ar = self.img.height() / max(1, self.img.width())
+            rw = int(min(2400, max(1200, self.w * 2)))
+            buf = QBuffer()
+            buf.open(QIODevice.WriteOnly)
+            render_svg(self.svg, rw, max(1, round(rw * ar))).save(buf, "PNG")
+            d["raster"] = base64.b64encode(bytes(buf.data())).decode()
+        return d
 
     @classmethod
     def from_dict(cls, d):
