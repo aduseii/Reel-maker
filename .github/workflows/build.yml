@@ -6,7 +6,7 @@ name: Build installer
 on:
   push:
     branches: [main]
-    paths-ignore: ["ios/**", ".github/workflows/ios.yml"]
+    paths-ignore: ["ios/**", "web/**", ".github/workflows/ios.yml", ".github/workflows/web.yml"]
   workflow_dispatch:
 
 permissions:

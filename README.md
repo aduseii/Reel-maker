@@ -19,6 +19,11 @@ A Windows desktop app that turns a 16:9 video into a 1080 × 1920 Instagram Reel
 - **No accidental changes:** number boxes, dropdowns and sliders ignore the mouse wheel until you click them, so scrolling the panel past them can't change anything. Zooming the cover with the wheel needs Ctrl held down.
 - **Built-in updates:** one click installs the newest release
 
+## Other versions
+
+- **Web:** https://aduseii.github.io/Reel-maker/ works in Safari on iPhone and in Chrome or Edge on any computer, and can be added to the Home Screen. Same templates (connect GitHub with a token that only has the `gist` permission, or import template files). Exporting plays the clip once in real time. No X link import (browsers can't download from X). Source in `web/`.
+- **iPhone app:** the `ios` pre-release has `ReelMaker.ipa` for AltStore or Sideloadly, and `altstore-source.json` to get updates in AltStore. Source in `ios/`.
+
 ## Install
 
 Download `ReelMakerSetup-x.y.z.exe` from [Releases](../../releases) and run it. Windows may say "Windows protected your PC" because the app isn't signed: click **More info → Run anyway**. Setup downloads the video encoder (about 30 MB) once.

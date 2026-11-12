@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reel Maker</title>
+<meta name="description" content="Turn a 16:9 video into an Instagram reel with your saved templates.">
+<meta name="theme-color" content="#0D0E10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Reel Maker">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <img class="logo" src="icons/favicon.png" alt="">
+  <span class="brand">Reel Maker</span>
+  <label class="btn primary" title="Open a video">
+    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Open video</span>
+    <input type="file" id="openVideo" accept="video/*" hidden>
+  </label>
+  <span id="fileName" class="muted ellipsis"></span>
+  <span class="grow"></span>
+  <button class="icon" id="undo" title="Undo (Ctrl+Z)" disabled><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+  <button class="icon" id="redo" title="Redo (Ctrl+Y)" disabled><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+  <button class="icon" id="lock" title="Lock the layout"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path id="lockShackle" d="M8 11V7a4 4 0 0 1 8 0"/></svg></button>
+  <button class="btn" id="tplBtn"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16"/></svg><span id="tplName">Templates</span></button>
+  <button class="btn primary" id="exportBtn"><svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg><span>Export</span></button>
+</header>
+
+<main>
+  <section class="stage">
+    <div class="canvasWrap"><canvas id="view" width="1080" height="1920"></canvas></div>
+    <div class="transport">
+      <button id="play" class="play" title="Play (Space)" disabled><svg viewBox="0 0 24 24"><path id="playIcon" d="M8 5v14l11-7z"/></svg></button>
+      <div class="trimBox">
+        <div id="trim" class="trim"><div class="sel"></div><div class="h hs"></div><div class="h he"></div><div class="ph"></div></div>
+        <div class="times"><span id="tNow">0:00.0</span><span id="tClip">Clip 0:00.0</span></div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <nav class="tabs">
+      <button data-tab="frame">Frame</button><button data-tab="layers" class="on">Layers</button>
+      <button data-tab="cover">Cover</button><button data-tab="export">Export</button>
+    </nav>
+    <div class="locked-note" id="lockedNote">Layout locked by the template. You can still change the words. <button id="unlockBtn" class="link">Unlock</button></div>
+
+    <div class="panel" id="p-frame" hidden>
+      <h3>Background</h3>
+      <div class="seg" id="bgSeg"><button data-v="black">Black</button><button data-v="white">White</button><button data-v="blur">Blur</button><button data-v="custom">Colour</button></div>
+      <label class="row" id="bgColorRow">Colour <input type="color" id="bgColor"></label>
+      <h3>Safe zone</h3>
+      <select id="preset"></select>
+      <div id="zoneCustom" class="grid2"></div>
+      <label class="check"><input type="checkbox" id="showZone" checked> Show safe zone</label>
+      <label class="check"><input type="checkbox" id="clamp"> Keep layers inside the safe zone</label>
+      <h3>Video</h3>
+      <div class="slider" data-k="video.scale" data-min="40" data-max="300" data-label="Size" data-suffix="%"></div>
+      <div class="slider" data-k="video.dx" data-min="-540" data-max="540" data-step="5" data-label="Across" data-suffix=" px"></div>
+      <div class="slider" data-k="video.dy" data-min="-960" data-max="960" data-step="5" data-label="Up / down" data-suffix=" px"></div>
+      <div class="slider" data-k="video.radius" data-min="0" data-max="200" data-step="2" data-label="Corners" data-suffix=" px"></div>
+      <button class="btn" id="resetVideo">Centre and reset size</button>
+    </div>
+
+    <div class="panel" id="p-layers">
+      <div class="toolbar">
+        <button class="btn" id="addText"><svg viewBox="0 0 24 24"><path d="M5 6h14M12 6v13"/></svg><span>Text</span></button>
+        <label class="btn"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg><span>Logo / photo</span>
+          <input type="file" id="addImage" accept="image/*,.svg" hidden></label>
+        <span class="grow"></span>
+        <button class="icon" id="layerUp" title="Bring forward"><svg viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+        <button class="icon" id="layerDown" title="Send back"><svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button>
+        <button class="icon danger" id="layerDel" title="Delete"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
+      </div>
+      <ul id="layerList" class="layers"></ul>
+      <p id="layersEmpty" class="muted small">Add text, a logo or a photo. Tap a layer on the preview to select it, drag to move it.</p>
+
+      <div id="textCtl" hidden>
+        <h3>Words</h3>
+        <textarea id="words" rows="3" placeholder="Type here (emoji welcome)"></textarea>
+        <div class="styleCtl">
+          <h3>Look</h3>
+          <div class="slider" data-k="l.size" data-min="16" data-max="200" data-label="Size" data-suffix=" px"></div>
+          <label class="row">Weight <select id="weight"></select></label>
+          <label class="row">Text colour <input type="color" id="tColor"></label>
+          <div class="seg" id="alignSeg"><button data-v="left">Left</button><button data-v="center">Centre</button><button data-v="right">Right</button></div>
+          <label class="check"><input type="checkbox" id="shadow"> Shadow</label>
+          <div class="slider" data-k="l.w" data-min="100" data-max="1080" data-step="10" data-label="Box width" data-suffix=" px"></div>
+          <h3>Background</h3>
+          <div class="seg" id="styleSeg"><button data-v="plain">None</button><button data-v="box">Box</button><button data-v="highlight">Highlight</button></div>
+          <label class="row">Box colour <input type="color" id="boxColor"></label>
+          <div class="slider" data-k="l.box_alpha" data-min="0" data-max="100" data-scale="100" data-label="Opacity" data-suffix="%"></div>
+          <div class="slider" data-k="l.radius" data-min="0" data-max="80" data-label="Corners" data-suffix=" px"></div>
+          <div class="slider" data-k="l.pad" data-min="0" data-max="100" data-label="Padding" data-suffix=" px"></div>
+          <h3>Placement</h3>
+          <label class="check"><input type="checkbox" id="tSit"> Sit on video</label>
+          <label class="check"><input type="checkbox" id="tFit"> Auto size and place one-line text</label>
+          <label class="check"><input type="checkbox" id="tPost"> Caption box for X imports</label>
+        </div>
+      </div>
+
+      <div id="imgCtl" hidden>
+        <h3>Image</h3>
+        <div class="slider" data-k="l.w" data-min="30" data-max="1080" data-step="2" data-label="Width" data-suffix=" px"></div>
+        <div class="slider" data-k="l.opacity" data-min="5" data-max="100" data-scale="100" data-label="Opacity" data-suffix="%"></div>
+        <label class="check"><input type="checkbox" id="iSit"> Sit on video</label>
+        <button class="btn" id="crispBtn">Crispest size</button>
+        <p id="imgNote" class="muted small"></p>
+      </div>
+    </div>
+
+    <div class="panel" id="p-cover" hidden>
+      <p class="muted small">Drag the preview to frame the picture. Slide to pick the moment.</p>
+      <h3>Moment</h3>
+      <input type="range" id="coverTime" min="0" max="1" step="0.01" value="0">
+      <div class="slider" data-k="cover.zoom" data-min="100" data-max="400" data-label="Zoom" data-suffix="%"></div>
+      <h3>Title</h3>
+      <input type="text" id="coverTitle" placeholder="Title (optional)">
+      <div id="titleCtl">
+        <div class="slider" data-k="cover.title_size" data-min="30" data-max="260" data-label="Size" data-suffix=" px"></div>
+        <div class="slider" data-k="cover.title_y" data-min="0" data-max="100" data-label="Position" data-suffix="%"></div>
+        <label class="row">Colour <input type="color" id="titleColor"></label>
+      </div>
+      <label class="check"><input type="checkbox" id="coverLayers"> Include text and logos</label>
+      <button class="btn" id="saveCover">Save cover as PNG</button>
+    </div>
+
+    <div class="panel" id="p-export" hidden>
+      <h3>Quality</h3>
+      <div class="seg" id="qualSeg"><button data-v="0">Best</button><button data-v="1">High</button><button data-v="2">Small</button></div>
+      <h3>Frame rate</h3>
+      <div class="seg" id="fpsSeg"><button data-v="0">30 fps</button><button data-v="1">60 fps</button></div>
+      <label class="check"><input type="checkbox" id="coverFirst"> Start the reel with the cover</label>
+      <p class="muted small">Exporting plays the clip once at normal speed, so a 30-second reel takes about 30 seconds. Keep this tab open and in front until it finishes.</p>
+      <button class="btn primary wide" id="exportBtn2">Export reel</button>
+    </div>
+  </aside>
+</main>
+<div id="status" class="status">Open a 16:9 video to start.</div>
+
+<video id="src" playsinline preload="auto"></video>
+
+<dialog id="tplDialog">
+  <form method="dialog" class="dlg">
+    <div class="dlgHead"><h2>Templates</h2><button class="icon" value="close" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <ul id="tplList" class="tpls"></ul>
+    <div class="toolbar wrap">
+      <button type="button" class="btn primary" id="tplSave">Save current layout…</button>
+      <label class="btn">Import file<input type="file" id="tplImport" accept=".json,application/json" hidden></label>
+      <button type="button" class="btn" id="tplDownload">Download current</button>
+    </div>
+    <h3>GitHub cloud</h3>
+    <p class="muted small" id="cloudInfo"></p>
+    <div id="cloudSetup">
+      <ol class="small">
+        <li><a href="#" id="tokenLink" target="_blank" rel="noopener">Make a GitHub token</a> (only the <b>gist</b> box is ticked; pick "No expiration" if you like), then <b>Generate token</b>.</li>
+        <li>Copy it and paste it here:</li>
+      </ol>
+      <div class="toolbar"><input type="password" id="tokenInput" placeholder="ghp_…" autocomplete="off"><button type="button" class="btn primary" id="tokenSave">Connect</button></div>
+    </div>
+    <div id="cloudOn" class="toolbar" hidden><button type="button" class="btn primary" id="cloudSync">Sync now</button><button type="button" class="btn" id="cloudOff">Disconnect</button></div>
+  </form>
+</dialog>
+
+<dialog id="exportDialog">
+  <div class="dlg">
+    <div class="dlgHead"><h2 id="exTitle">Exporting…</h2></div>
+    <div id="exRun"><progress id="exProg" max="1" value="0"></progress><p class="muted small" id="exMsg">Getting ready…</p>
+      <button class="btn" id="exCancel">Cancel</button></div>
+    <div id="exDone" hidden>
+      <video id="exVideo" controls playsinline></video>
+      <div class="toolbar wrap">
+        <button class="btn primary" id="exShare">Save or share…</button>
+        <a class="btn" id="exDownload" download="reel.mp4">Download</a>
+        <button class="btn" id="exClose">Close</button>
+      </div>
+      <p class="muted small" id="exHint"></p>
+    </div>
+  </div>
+</dialog>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
