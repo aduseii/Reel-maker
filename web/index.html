@@ -23,6 +23,7 @@
     <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Open video</span>
     <input type="file" id="openVideo" accept="video/*" hidden>
   </label>
+  <button class="btn" id="xBtn" title="Import a video and its text from an X post link (or just paste the link)"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg><span>From X link</span></button>
   <span id="fileName" class="muted ellipsis"></span>
   <span class="grow"></span>
   <button class="icon" id="undo" title="Undo (Ctrl+Z)" disabled><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
@@ -166,6 +167,19 @@
     </div>
     <div id="cloudOn" class="toolbar" hidden><button type="button" class="btn primary" id="cloudSync">Sync now</button><button type="button" class="btn" id="cloudOff">Disconnect</button></div>
   </form>
+</dialog>
+
+<dialog id="xDialog">
+  <div class="dlg">
+    <div class="dlgHead"><h2>Import from X</h2><button class="icon" id="xClose" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <p class="muted small">Paste the link to a post with a video. Reel Maker downloads the video, puts it in your template and fills the caption box with the post's text. Then just pick a cover and export.</p>
+    <div class="toolbar"><input type="text" id="xLink" placeholder="https://x.com/…/status/…" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="btn" id="xPaste" type="button">Paste</button></div>
+    <div id="xChoose" class="toolbar wrap" hidden></div>
+    <progress id="xProg" max="1" value="0" hidden></progress>
+    <p class="small" id="xMsg"></p>
+    <button class="btn primary wide" id="xGo">Import</button>
+  </div>
 </dialog>
 
 <dialog id="exportDialog">

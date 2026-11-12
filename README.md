@@ -21,7 +21,7 @@ A Windows desktop app that turns a 16:9 video into a 1080 × 1920 Instagram Reel
 
 ## Other versions
 
-- **Web:** https://aduseii.github.io/Reel-maker/ works in Safari on iPhone and in Chrome or Edge on any computer, and can be added to the Home Screen. Same templates (connect GitHub with a token that only has the `gist` permission, or import template files). Exporting plays the clip once in real time. No X link import (browsers can't download from X). Source in `web/`.
+- **Web:** https://aduseii.github.io/Reel-maker/ works in Safari on iPhone and in Chrome or Edge on any computer, and can be added to the Home Screen. Same templates (connect GitHub with a token that only has the `gist` permission, or import template files). Exporting plays the clip once in real time. X link import works too: X's own post lookup won't answer websites, so the web version looks posts up through the free FxTwitter (or vxTwitter) service, then downloads the video straight from X. Source in `web/`.
 - **iPhone app:** the `ios` pre-release has `ReelMaker.ipa` for AltStore or Sideloadly, and `altstore-source.json` to get updates in AltStore. Source in `ios/`.
 
 ## Install

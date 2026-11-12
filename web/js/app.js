@@ -3,6 +3,7 @@ import { RW, RH, PRESETS, WEIGHTS, css, toInput, fromInput, layout, heightOf, re
 import { exportReel } from "./export.js";
 import * as store from "./store.js";
 import * as cloud from "./cloud.js";
+import * as X from "./ximport.js";
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -254,6 +255,33 @@ async function openVideo(file) {
   status(`${video.videoWidth} × ${video.videoHeight} loaded. Trim it, then pick a cover and export.`);
   refresh();
   resetHistory();
+  if (R.pendingPost) {
+    const post = R.pendingPost; R.pendingPost = null;
+    const note = fillCaption(post.caption);
+    commit();
+    showTab("cover");
+    status(`Imported @${post.user}'s video. ${note}Pick a cover, then export.`);
+  }
+}
+
+/** Put the post's text in the template's caption box (or the first text box, or a new one). */
+function fillCaption(text) {
+  if (!text) return "The post has no text, so the caption box wasn't changed. ";
+  let targets = S.layers.filter((l) => l.kind === "text" && l.from_post);
+  if (!targets.length) targets = S.layers.filter((l) => l.kind === "text").slice(0, 1);
+  if (!targets.length) {
+    const t = newText(text), z = zoneRect();
+    Object.assign(t, { w: Math.max(200, z.w - 80), from_post: true, fit_one_line: true, attach_gap: 24, size: 48 });
+    S.layers.push(t);
+    targets = [t];
+  }
+  targets.forEach((t) => (t.text = text));
+  R.sel = targets[0]._id;
+  refresh();
+  const z = zoneRect();
+  if (targets.some((t) => { const r = rectOf(t); return r.y < z.y - 1 || r.y + r.h > z.y + z.h + 1; }))
+    return "The caption is long and runs outside the safe zone; shorten it in Layers. ";
+  return "";
 }
 function loop() {
   if (!R.playing) return;
@@ -714,6 +742,65 @@ $("#exportBtn2").addEventListener("click", doExport);
 $("#exCancel").addEventListener("click", () => { exSignal.cancel = true; });
 $("#exClose").addEventListener("click", () => exDialog.close());
 $("#exShare").addEventListener("click", () => { navigator.share({ files: [exResult] }).catch(() => {}); });
+
+// ---------------------------------------------------------------- X import
+const xDialog = $("#xDialog");
+let xBusy = false;
+function openX(link = "") {
+  $("#xLink").value = link; $("#xMsg").textContent = ""; $("#xChoose").hidden = true; $("#xProg").hidden = true;
+  $("#xGo").disabled = false;
+  if (!xDialog.open) xDialog.showModal();
+  if (link) importX();
+}
+async function importX() {
+  if (xBusy) return;
+  const link = $("#xLink").value.trim();
+  if (!X.findPost(link)) { $("#xMsg").textContent = "That doesn't look like a link to an X post."; return; }
+  xBusy = true; $("#xGo").disabled = true; $("#xMsg").textContent = "Getting the post…"; $("#xChoose").hidden = true;
+  try {
+    const post = await X.getPost(link);
+    if (post.videos.length > 1 && !post.index) {
+      $("#xMsg").textContent = `This post has ${post.videos.length} videos. Which one?`;
+      const box = $("#xChoose"); box.innerHTML = ""; box.hidden = false;
+      post.videos.forEach((u, i) => {
+        const b = document.createElement("button"); b.className = "btn"; b.textContent = `Video ${i + 1}`;
+        b.addEventListener("click", () => fetchX(post, i)); box.appendChild(b);
+      });
+      xBusy = false;
+      return;
+    }
+    await fetchX(post, Math.min(post.videos.length, post.index || 1) - 1);
+  } catch (e) {
+    $("#xMsg").textContent = e.message; xBusy = false; $("#xGo").disabled = false;
+  }
+}
+async function fetchX(post, i) {
+  xBusy = true; $("#xChoose").hidden = true; $("#xProg").hidden = false; $("#xProg").value = 0;
+  $("#xMsg").textContent = "Downloading the video…";
+  try {
+    const name = `${post.user}_${post.id}${post.videos.length > 1 ? "_" + (i + 1) : ""}`;
+    const file = await X.download(post.videos[i], name, (f) => ($("#xProg").value = f));
+    xDialog.close();
+    R.pendingPost = post;
+    await openVideo(file);
+  } catch (e) {
+    $("#xMsg").textContent = e.message; $("#xGo").disabled = false;
+  } finally { xBusy = false; $("#xProg").hidden = true; }
+}
+$("#xBtn").addEventListener("click", () => openX());
+$("#xClose").addEventListener("click", () => xDialog.close());
+$("#xGo").addEventListener("click", importX);
+$("#xLink").addEventListener("keydown", (e) => { if (e.key === "Enter") importX(); });
+$("#xPaste").addEventListener("click", async () => {
+  try { $("#xLink").value = await navigator.clipboard.readText(); importX(); }
+  catch { $("#xMsg").textContent = "Press and hold in the box, then tap Paste."; $("#xLink").focus(); }
+});
+// paste an X link anywhere (not into a text box) to import it
+document.addEventListener("paste", (e) => {
+  if (/INPUT|TEXTAREA/.test(document.activeElement?.tagName || "")) return;
+  const t = e.clipboardData?.getData("text") || "";
+  if (X.findPost(t)) { e.preventDefault(); openX(t); }
+});
 
 // ---------------------------------------------------------------- start
 syncPanel();
