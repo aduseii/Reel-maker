@@ -1,6 +1,6 @@
 // Works offline once opened: the app's own files are kept, and always refreshed from the
 // network when there is one (so updates arrive straight away).
-const CACHE = "reelmaker-v2";
+const CACHE = "reelmaker-v3";
 const CORE = ["./", "index.html", "style.css", "js/app.js", "js/render.js", "js/export.js", "js/store.js", "js/cloud.js", "js/ximport.js",
   "vendor/mp4-muxer.mjs", "manifest.webmanifest", "icons/favicon.png", "icons/icon-192.png",
   "fonts/InterDisplay-Regular.ttf", "fonts/InterDisplay-Medium.ttf", "fonts/InterDisplay-SemiBold.ttf",

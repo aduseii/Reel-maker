@@ -35,7 +35,15 @@ const newText = (text = "Your text here") => ({
   x: RW / 2, y: RH / 2, attach_gap: null, from_post: false, fit_one_line: false, _id: nextId++,
 });
 const selected = () => S.layers.find((l) => l._id === R.sel) || null;
-const status = (m) => { $("#status").textContent = m; };
+const MOBILE = () => matchMedia("(max-width: 860px)").matches;
+let toastTimer = null;
+const status = (m) => {
+  const el = $("#status");
+  el.textContent = m;
+  el.classList.add("show");                    // on phones it's a toast that fades away
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 3500);
+};
 
 // ---------------------------------------------------------------- images
 const imgCache = new Map();
@@ -347,9 +355,20 @@ function updateTransport() {
 (() => {
   let drag = null;
   const pt = (e) => { const b = view.getBoundingClientRect(); return { x: ((e.clientX - b.left) / b.width) * RW, y: ((e.clientY - b.top) / b.height) * RH }; };
+  const pts = new Map();
+  let pinch = null;
+  const dist = () => { const [a, b] = [...pts.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
   view.addEventListener("pointerdown", (e) => {
     view.setPointerCapture(e.pointerId);
     const p = pt(e);
+    pts.set(e.pointerId, p);
+    if (pts.size === 2) {                        // two fingers: pinch to resize the selected layer
+      const l = selected();
+      drag = null;
+      pinch = l && !R.locked && R.tab !== "cover" ? { l, d: dist(), w: l.w, size: baseSize(l) } : null;
+      return;
+    }
+    if (pts.size > 2) return;
     if (R.tab === "cover") { drag = { cover: true, p, cx: R.coverCX, cy: R.coverCY }; return; }
     const hit = [...S.layers].reverse().find((l) => { const r = rectOf(l); return p.x >= r.x - 12 && p.x <= r.x + r.w + 12 && p.y >= r.y - 12 && p.y <= r.y + r.h + 12; });
     R.sel = hit ? hit._id : null;
@@ -358,6 +377,19 @@ function updateTransport() {
     refresh();
   });
   view.addEventListener("pointermove", (e) => {
+    if (pts.has(e.pointerId)) pts.set(e.pointerId, pt(e));
+    if (pinch && pts.size === 2) {
+      const k = dist() / Math.max(1, pinch.d), l = pinch.l;
+      if (l.kind === "text") {
+        const v = Math.round(Math.min(260, Math.max(16, pinch.size * k)));
+        if (l._fitBase != null) l._fitBase = v; else l.size = v;
+      } else {
+        const cx = l.x, cy = l.y;
+        l.w = Math.min(RW, Math.max(30, pinch.w * k)); l.x = cx; l.y = cy;
+      }
+      refresh(false);
+      return;
+    }
     if (!drag) return;
     const p = pt(e);
     if (drag.cover) {
@@ -379,7 +411,12 @@ function updateTransport() {
     }
     refresh(false);
   });
-  const end = () => { if (drag) { R.guideX = false; refresh(); commit(); } drag = null; };
+  const end = (e) => {
+    pts.delete(e.pointerId);
+    if (pinch) { if (pts.size < 2) { pinch = null; refresh(); commit(); } return; }
+    if (drag) { R.guideX = false; refresh(); commit(); }
+    drag = null;
+  };
   view.addEventListener("pointerup", end);
   view.addEventListener("pointercancel", end);
   view.addEventListener("dblclick", () => { if (selected()?.kind === "text") { showTab("layers"); $("#words").focus(); } });
@@ -393,7 +430,12 @@ function showTab(t) {
   if (t === "cover") { if (R.playing) pause(); grabCover(); }
   draw();
 }
-$$(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+$$(".tabs button").forEach((b) => b.addEventListener("click", () => {
+  // on phones, tapping the open tab again tucks the settings away for a bigger preview
+  if (MOBILE() && b.dataset.tab === R.tab) document.body.classList.toggle("sheet-closed");
+  else { document.body.classList.remove("sheet-closed"); showTab(b.dataset.tab); }
+}));
+$("#grabber").addEventListener("click", () => document.body.classList.toggle("sheet-closed"));
 
 async function grabCover() {
   if (!R.url) return;
@@ -567,7 +609,7 @@ $("#addText").addEventListener("click", () => {
   t.attach_gap = 24;
   S.layers.push(t); R.sel = t._id;
   refresh(); commit();
-  $("#words").focus(); $("#words").select();
+  if (!MOBILE()) { $("#words").focus(); $("#words").select(); }   // on phones, don't throw the keyboard up
 });
 $("#addImage").addEventListener("change", async (e) => {
   const f = e.target.files[0]; e.target.value = "";
