@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.18.1"
+__version__ = "1.19.0"
 
 import os
 import re
@@ -501,15 +501,16 @@ class TextLayer:
     """A fixed-width text box: the width never grows, long text wraps to new lines.
     (x, y) is the centre of the top edge, so extra lines grow downward."""
     kind = "text"
-    FIELDS = ("text", "family", "weight", "size", "align", "style", "box_alpha", "radius", "pad",
+    FIELDS = ("text", "family", "weight", "italic", "size", "align", "style", "box_alpha", "radius", "pad",
               "spacing", "shadow", "opacity", "w", "x", "y", "attach_gap", "from_post", "fit_one_line")
 
     def __init__(self, text="Your text here"):
         self.text = text
         self.family = DEFAULT_FONT
         self.weight = 700
+        self.italic = False
         self.size = 64
-        self.color = QColor("#FFFFFF")
+        self.color = QColor("#FFFFFF")   # its alpha is the text's own opacity (words and emoji)
         self.align = "center"
         self.style = "box"           # plain | box | highlight
         self.box_color = QColor("#000000")
@@ -555,12 +556,14 @@ class TextLayer:
                 setattr(o, k, d[k])
         o.color = QColor(d.get("color", "#FFFFFFFF"))
         o.box_color = QColor(d.get("box_color", "#FF000000"))
+        o.italic = bool(o.italic)
         return o
 
     def font(self):
         f = QFont(self.family)
         f.setPixelSize(self.size)
         f.setWeight(QFont.Weight(self.weight))
+        f.setItalic(bool(self.italic))
         f.setHintingPreference(QFont.PreferNoHinting)
         return f
 
@@ -575,7 +578,7 @@ class TextLayer:
 
     # layout --------------------------------------------------------
     def layout(self):
-        key = (self.text, self.family, self.weight, self.size, self.w, self.style, self.pad,
+        key = (self.text, self.family, self.weight, self.italic, self.size, self.w, self.style, self.pad,
                self.spacing, EMOJI.folder, EMOJI.font_family)
         if key == self._cache_key:
             return self._layout
@@ -700,7 +703,8 @@ class TextLayer:
         if getattr(self, "editing", False):   # the on-canvas editor draws the words
             p.restore()
             return
-        passes = [(QColor(0, 0, 0, 120), self.size * 0.05)] if self.shadow else []
+        text_alpha = self.color.alphaF()       # the words' own opacity: the shadow and emoji fade with them
+        passes = [(QColor(0, 0, 0, round(120 * text_alpha)), self.size * 0.05)] if self.shadow else []
         passes.append((self.color, 0))
         for color, off in passes:
             for i, ln in enumerate(lines):
@@ -716,7 +720,9 @@ class TextLayer:
                         es = self.size * 1.02
                         ey = top + i * lh + (lh - es) / 2
                         if img is not None:
+                            p.setOpacity(self.opacity * text_alpha)
                             draw_image_hq(p, QRectF(x + (t[2] - es) / 2, ey, es, es), img)
+                            p.setOpacity(self.opacity)
                         else:
                             p.setFont(efont)
                             p.setPen(color)

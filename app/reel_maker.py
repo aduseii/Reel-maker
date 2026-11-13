@@ -809,6 +809,7 @@ class CanvasTextEdit(QPlainTextEdit):
         self.setStyleSheet(
             "QPlainTextEdit{background:transparent;border:none;padding:0;"
             f"font-family:'{L.family}';font-size:{f.pixelSize()}px;font-weight:{L.weight};"
+            f"font-style:{'italic' if L.italic else 'normal'};"
             f"color:rgba({c.red()},{c.green()},{c.blue()},{c.alpha()});"
             f"selection-background-color:{C['accent']};selection-color:{C['on_accent']}}}")
         opt = self.document().defaultTextOption()
@@ -1819,7 +1820,9 @@ class ReelMaker(QMainWindow):
         cv.setSpacing(10)
         self.ly_op = slider(5, 100, 100)
         self.ly_op.valueChanged.connect(self.on_layer_controls)
-        cv.addWidget(field("Opacity", self.ly_op))
+        self.ly_op_row = field("Opacity", self.ly_op)
+        self.ly_op_label = self.ly_op_row.findChild(QLabel)
+        cv.addWidget(self.ly_op_row)
         self.snap_seg = Segmented(["↖", "↑", "↗", "●", "↙", "↓", "↘"], checkable=False)
         keys = ["tl", "tc", "tr", "c", "bl", "bc", "br"]
         names = ["Top left", "Top centre", "Top right", "Centre", "Bottom left", "Bottom centre", "Bottom right"]
@@ -1920,7 +1923,19 @@ class ReelMaker(QMainWindow):
         self.load_font_btn.setToolTip("Load a .ttf / .otf font file")
         self.load_font_btn.setFixedWidth(34)
         self.load_font_btn.clicked.connect(self.load_font_file)
-        v.addWidget(field("Font", row(self.txt_font, self.load_font_btn, stretch_index=0)))
+        self.txt_italic = QToolButton(text="I")
+        self.txt_italic.setObjectName("italicBtn")
+        self.txt_italic.setCheckable(True)
+        self.txt_italic.setFixedSize(34, 30)
+        self.txt_italic.setCursor(Qt.PointingHandCursor)
+        self.txt_italic.setToolTip("Italic")
+        self.txt_italic.setStyleSheet(
+            f"QToolButton#italicBtn{{font-family:'Georgia','Times New Roman',serif;font-style:italic;"
+            f"font-size:17px;font-weight:700;padding:0}}"
+            f"QToolButton#italicBtn:checked{{background:rgba(242,179,27,0.14);"
+            f"border:1px solid rgba(242,179,27,0.45);color:{C['accent']}}}")
+        self.txt_italic.toggled.connect(self.on_layer_controls)
+        v.addWidget(field("Font", row(self.txt_font, self.txt_italic, self.load_font_btn, stretch_index=0)))
 
         self.txt_weight = QComboBox()
         self.txt_weight.setMinimumWidth(60)
@@ -1933,6 +1948,14 @@ class ReelMaker(QMainWindow):
         self.txt_color.colorChanged.connect(lambda c: self.set_layer_attr("color", c))
         self.txt_size.valueChanged.connect(self.on_layer_controls)
         v.addWidget(field("Style", row(self.txt_weight, self.txt_size, self.txt_color, stretch_index=0)))
+        self.txt_alpha = slider(0, 100, 100)
+        self.txt_alpha.setToolTip("How see-through the words and emoji are. The background has its own opacity.")
+        self.txt_alpha_label = label("100%", "faint")
+        self.txt_alpha_label.setFixedWidth(38)
+        self.txt_alpha_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.txt_alpha.valueChanged.connect(lambda v: self.txt_alpha_label.setText(f"{v}%"))
+        self.txt_alpha.valueChanged.connect(self.on_layer_controls)
+        v.addWidget(field("Opacity", row(self.txt_alpha, self.txt_alpha_label, stretch_index=0)))
 
         self.align_seg = Segmented(["Left", "Centre", "Right"])
         self.align_seg.setValue(1)
@@ -1999,8 +2022,8 @@ class ReelMaker(QMainWindow):
         em.addAction("Back to built-in emoji", self.clear_emoji_folder)
         eb.setMenu(em)
         v.addWidget(field("Emoji", row(self.emoji_label, None, eb)))
-        self.text_style_controls = [self.txt_font, self.load_font_btn, self.txt_weight, self.txt_size,
-                                    self.txt_color, self.align_seg, self.txt_width, self.txt_spacing,
+        self.text_style_controls = [self.txt_font, self.load_font_btn, self.txt_weight, self.txt_italic,
+                                    self.txt_size, self.txt_color, self.txt_alpha, self.align_seg, self.txt_width, self.txt_spacing,
                                     self.txt_style, self.txt_box_color, self.txt_box_alpha,
                                     self.txt_radius, self.txt_pad, self.txt_shadow, self.txt_from_post, self.txt_fit]
         return w
@@ -2834,6 +2857,12 @@ class ReelMaker(QMainWindow):
         self._syncing = True
         try:
             self.ly_op.setValue(int(o.opacity * 100))
+            if o.kind == "text":
+                self.ly_op_label.setText("Whole layer")
+                self.ly_op.setToolTip("Fades everything in this text layer together: words, emoji and background")
+            else:
+                self.ly_op_label.setText("Opacity")
+                self.ly_op.setToolTip("")
             gap = getattr(o, "attach_gap", None)
             self.sit_btn.setChecked(gap is not None)
             if gap is not None:
@@ -2848,8 +2877,10 @@ class ReelMaker(QMainWindow):
                     self.txt_edit.setPlainText(o.text)
                 self.txt_font.setCurrentFont(QFont(o.family))
                 self.txt_weight.setCurrentIndex([w for _, w in WEIGHTS].index(o.weight))
+                self.txt_italic.setChecked(bool(o.italic))
                 self.txt_size.setValue(o.base_size())
                 self.txt_color.setColor(o.color)
+                self.txt_alpha.setValue(round(o.color.alphaF() * 100))
                 self.align_seg.setValue(("left", "center", "right").index(o.align))
                 self.txt_shadow.setChecked(o.shadow)
                 self.txt_from_post.setChecked(bool(getattr(o, "from_post", False)))
@@ -2886,6 +2917,10 @@ class ReelMaker(QMainWindow):
         else:
             o.family = self.txt_font.currentFont().family()
             o.weight = WEIGHTS[self.txt_weight.currentIndex()][1]
+            o.italic = self.txt_italic.isChecked()
+            if o.color.alpha() != round(self.txt_alpha.value() * 2.55):
+                o.color = QColor(o.color)
+                o.color.setAlphaF(self.txt_alpha.value() / 100)
             if o.fit_base:
                 o.fit_base = self.txt_size.value()   # a one-line fit is showing: change the box's own size
             else:
@@ -2960,7 +2995,10 @@ class ReelMaker(QMainWindow):
     def set_layer_attr(self, attr, value):
         o = self.selected()
         if o and o.kind == "text" and not self.locked:
-            setattr(o, attr, QColor(value))
+            c = QColor(value)
+            if attr == "color":                  # a new colour keeps the text's opacity
+                c.setAlpha(o.color.alpha())
+            setattr(o, attr, c)
             self.changed()
 
     def layer_changed(self, sync_panel=True):
@@ -3032,7 +3070,7 @@ class ReelMaker(QMainWindow):
         """Size and place one-line text. Returns False when the text isn't one line or there's no room."""
         base = o.base_size()
         vr, z = self.video_rect(), self.zone()
-        key = (o.text, base, o.w, o.family, o.weight, o.style, o.pad, o.spacing,
+        key = (o.text, base, o.w, o.family, o.weight, o.italic, o.style, o.pad, o.spacing,
                round(vr.top(), 1), round(z.top(), 1), EMOJI.folder, EMOJI.font_family)
         hit = getattr(o, "_fit_key", None) == key
         self.unfit(o)
