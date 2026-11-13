@@ -12,6 +12,10 @@ final class Cloud: ObservableObject {
     @Published var message = ""
     struct TemplateRef: Identifiable { let name: String; let file: URL; var id: URL { file } }
     @Published var templates: [TemplateRef] = []
+    /// Bumped after every sync; `lastDownloaded` holds the template files that came down in it.
+    @Published var syncCount = 0
+    var lastDownloaded: [String] = []
+    private var chain: Task<String, Error>?
 
     private var token: String?
     private var gistID: String?
@@ -52,6 +56,7 @@ final class Cloud: ObservableObject {
     private func request(_ method: String, _ url: String, json: Any? = nil, form: [String: String]? = nil, auth: Bool = true) async throws -> (Int, Data) {
         var r = URLRequest(url: URL(string: url)!)
         r.httpMethod = method
+        r.cachePolicy = .reloadIgnoringLocalCacheData   // GitHub lets apps reuse answers for 60 s: always ask for the latest
         r.setValue("application/json", forHTTPHeaderField: "Accept")
         if auth, let t = token {
             r.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
@@ -157,8 +162,20 @@ final class Cloud: ObservableObject {
         return (j["saved_at"] as? NSNumber)?.doubleValue ?? 0
     }
 
-    /// Two-way: newer templates win on each side. (Deleting is done on the PC.)
+    /// One sync at a time: a sync asked for while another runs starts when that one ends.
+    @MainActor
     func sync() async throws -> String {
+        let prev = chain
+        let t = Task { () async throws -> String in
+            _ = try? await prev?.value
+            return try await self.syncOnce()
+        }
+        chain = t
+        return try await t.value
+    }
+
+    /// Two-way: newer templates win on each side. (Deleting is done on the PC.)
+    private func syncOnce() async throws -> String {
         let g = try await gist()
         let files = g["files"] as? [String: [String: Any]] ?? [:]
         var idx: [String: Any] = [:]
@@ -167,6 +184,7 @@ final class Cloud: ObservableObject {
         }
         var down = 0, up = 0
         var uploads: [String: Any] = [:]
+        var got: [String] = []
         let local = Dictionary(uniqueKeysWithValues: ((try? FileManager.default.contentsOfDirectory(at: Cloud.folder, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension.lowercased() == "json" }.map { ($0.lastPathComponent, $0) })
         for (name, f) in files where name != Cloud.index && name.lowercased().hasSuffix(".json") {
@@ -175,6 +193,7 @@ final class Cloud: ObservableObject {
             if lu == nil || rs > stamp(lu!) + 0.5 {
                 try Data(try await fileText(f).utf8).write(to: Cloud.folder.appendingPathComponent(name))
                 down += 1
+                got.append(name)
             }
         }
         for (name, u) in local {
@@ -189,7 +208,11 @@ final class Cloud: ObservableObject {
             uploads[Cloud.index] = ["content": String(decoding: try JSONSerialization.data(withJSONObject: ["templates": idx]), as: UTF8.self)]
             _ = try await api("PATCH", "/gists/\(id)", json: ["files": uploads])
         }
-        await MainActor.run { self.reloadLocal() }
+        await MainActor.run {
+            self.reloadLocal()
+            self.lastDownloaded = got
+            self.syncCount += 1
+        }
         return "Synced: \(down) downloaded, \(up) uploaded."
     }
 

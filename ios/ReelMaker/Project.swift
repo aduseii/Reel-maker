@@ -188,8 +188,7 @@ final class Project: ObservableObject {
     // MARK: X caption
     func fillCaption(_ text: String) -> String {
         guard !text.isEmpty else { return "The post has no text, so the caption box wasn't changed. " }
-        var targets = layers.indices.filter { layers[$0].kind == .text && layers[$0].fromPost }
-        if targets.isEmpty, let first = layers.indices.first(where: { layers[$0].kind == .text }) { targets = [first] }
+        var targets = Project.captionIndices(layers)
         if targets.isEmpty {
             var t = Layer.newText(text)
             t.w = max(200, zoneRect.width - 80); t.fromPost = true; t.fitOneLine = true; t.attachGap = 24; t.size = 48
@@ -318,14 +317,25 @@ final class Project: ObservableObject {
     }
 
     // MARK: templates
+    /// The caption box(es): ticked "Caption box", otherwise the first text box. X imports fill it, and
+    /// templates keep its place and style but not its words.
+    static func captionIndices(_ layers: [Layer]) -> [Int] {
+        let texts = layers.indices.filter { layers[$0].kind == .text }
+        let ticked = texts.filter { layers[$0].fromPost }
+        return ticked.isEmpty ? Array(texts.prefix(1)) : ticked
+    }
+
+    /// What a template file holds: the layout, with the caption box's words left out.
     func templateDict(name: String) -> [String: Any] {
-        [
+        var saved = layers
+        for i in Project.captionIndices(saved) { saved[i].text = "" }
+        return [
             "version": 1, "name": name, "saved_at": Date().timeIntervalSince1970,
             "background": ["mode": bgMode, "color": bgColor],
             "preset": preset, "zone": zone,
             "video": ["scale": scale, "dx": dx, "dy": dy, "radius": radius],
             "clamp": clamp,
-            "layers": layers.map { $0.toDict() },
+            "layers": saved.map { $0.toDict() },
             "cover": ["title": coverTitle, "title_size": coverTitleSize, "title_color": coverTitleColor,
                       "title_y": coverTitleY, "include_layers": coverIncludeLayers, "zoom": coverZoom, "grid": true],
             "export": ["quality": quality, "fps": fps, "save_cover": saveCoverToo, "cover_first": coverFirst,
@@ -343,7 +353,11 @@ final class Project: ObservableObject {
         let v = d["video"] as? [String: Any] ?? [:]
         scale = num(v["scale"], 100); dx = num(v["dx"], 0); dy = num(v["dy"], 0); radius = num(v["radius"], 0)
         clamp = d["clamp"] as? Bool ?? true
+        // the words already in your caption box come along (an X import, or the template updated elsewhere)
+        let words = Project.captionIndices(layers).map { layers[$0].text }
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? ""
         layers = (d["layers"] as? [[String: Any]] ?? []).compactMap { Layer.fromDict($0) }
+        for i in Project.captionIndices(layers) { layers[i].text = words }
         let c = d["cover"] as? [String: Any] ?? [:]
         coverTitle = c["title"] as? String ?? ""
         coverTitleSize = num(c["title_size"], 110)

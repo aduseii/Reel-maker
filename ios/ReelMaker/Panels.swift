@@ -130,7 +130,7 @@ struct LayersPanel: View {
                         Image(systemName: l.kind == .text ? "textformat" : "photo")
                         Text(l.label).lineLimit(1)
                         Spacer()
-                        if l.fromPost { Text("X caption").font(.caption2).foregroundStyle(.secondary) }
+                        if l.fromPost { Text("Caption").font(.caption2).foregroundStyle(.secondary) }
                     }
                     .padding(.vertical, 8).padding(.horizontal, 10)
                     .background(RoundedRectangle(cornerRadius: 8).fill(l.id == p.selectedID ? accent.opacity(0.22) : Color.white.opacity(0.05)))
@@ -200,7 +200,7 @@ struct TextControls: View {
                                                          set: { on in p.edit(p.selectedID) { $0.attachGap = on ? 24 : nil } }))
                     Toggle("Auto size and place one-line text", isOn: Binding(get: { p.layers[p.selectedIndex ?? 0].fitOneLine },
                                                                              set: { on in p.edit(p.selectedID) { l in l.fitOneLine = on; if !on { p.unfit(&l) } } }))
-                    Toggle("Caption box for X imports", isOn: p.lb(\.fromPost, false))
+                    Toggle("Caption box (X imports fill it; templates skip its words)", isOn: p.lb(\.fromPost, false))
                 }
             }
             .disabled(p.locked)

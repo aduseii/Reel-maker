@@ -161,6 +161,7 @@ function draw() {
     ctx.fillText("Your 16:9 video goes here", vr.x + vr.w / 2, vr.y + vr.h / 2 + 12); ctx.textAlign = "start";
   }
   ctx.drawImage(overlay, 0, 0);
+  drawEmptyBoxes();
   if (R.showZone) {
     const z = zoneRect();
     ctx.save(); ctx.setLineDash([12, 10]); ctx.strokeStyle = "rgba(255,214,10,.7)"; ctx.lineWidth = 3;
@@ -172,6 +173,23 @@ function draw() {
     ctx.save(); ctx.strokeStyle = "#FFA53A"; ctx.lineWidth = 4; ctx.strokeRect(r.x - 4, r.y - 4, r.w + 8, r.h + 8); ctx.restore();
   }
   if (R.guideX) { ctx.fillStyle = "#FF3D8B"; ctx.fillRect(RW / 2 - 1.5, 0, 3, RH); }
+}
+
+/** An empty text box (a template's caption box before you type) shows where the words will go.
+ *  Preview only: the reel and the cover have nothing there. */
+function drawEmptyBoxes() {
+  const caps = captionBoxes(S.layers);
+  for (const l of S.layers) {
+    if (l.kind !== "text" || (l.text || "").trim() || l._editing) continue;
+    const r = rectOf(l);
+    ctx.save();
+    ctx.fillStyle = "rgba(128,128,128,.16)"; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.setLineDash([12, 9]); ctx.strokeStyle = "rgba(150,150,150,.85)"; ctx.lineWidth = 3; ctx.strokeRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = "rgba(165,165,165,.95)"; ctx.font = `600 ${Math.max(22, Math.min(l.size, 44))}px "Inter Display", sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(caps.includes(l) ? "Caption: type it in Layers" : "Empty text", r.x + r.w / 2, r.y + r.h / 2, r.w - 20);
+    ctx.restore();
+  }
 }
 
 /** After any change: place attached layers, redraw, update the panel. */
@@ -233,8 +251,24 @@ function applyState(d) {
   });
   S.layers.forEach((l) => { if (l._id >= nextId) nextId = l._id + 1; });
 }
+/** The caption box(es): ticked "Caption box", otherwise the first text box. X imports fill it, and
+ *  templates keep its place and style but not its words. */
+function captionBoxes(layers) {
+  const texts = layers.filter((l) => l.kind === "text");
+  const ticked = texts.filter((l) => l.from_post);
+  return ticked.length ? ticked : texts.slice(0, 1);
+}
+/** What a template file holds: the layout, with the caption box's words left out. */
+function templateFile(name) {
+  const d = templateState(name);
+  captionBoxes(d.layers).forEach((l) => (l.text = ""));
+  return d;
+}
 function useTemplate(json) {
+  // the words already in your caption box come along (an X import, or the template updated elsewhere)
+  const words = captionBoxes(S.layers).map((l) => l.text || "").find((t) => t.trim()) || "";
   applyState(json);
+  captionBoxes(S.layers).forEach((l) => (l.text = words));
   R.sel = null; R.locked = true;
   $("#tplName").textContent = json.name || "Template";
   localStorage.setItem("rm.lastTemplate", json.name || "");
@@ -275,8 +309,7 @@ async function openVideo(file) {
 /** Put the post's text in the template's caption box (or the first text box, or a new one). */
 function fillCaption(text) {
   if (!text) return "The post has no text, so the caption box wasn't changed. ";
-  let targets = S.layers.filter((l) => l.kind === "text" && l.from_post);
-  if (!targets.length) targets = S.layers.filter((l) => l.kind === "text").slice(0, 1);
+  let targets = captionBoxes(S.layers);
   if (!targets.length) {
     const t = newText(text), z = zoneRect();
     Object.assign(t, { w: Math.max(200, z.w - 80), from_post: true, fit_one_line: true, attach_gap: 24, size: 48 });
@@ -560,7 +593,7 @@ function renderList() {
     const li = document.createElement("li");
     li.className = l._id === R.sel ? "on" : "";
     const label = l.kind === "image" ? l.name || "image" : (l.text || "").replace(/\s+/g, " ").trim().slice(0, 40) || "Empty text";
-    li.innerHTML = `<span>${l.kind === "image" ? "🖼" : "T"}</span><span class="t"></span>${l.from_post ? '<span class="tag">X caption</span>' : ""}`;
+    li.innerHTML = `<span>${l.kind === "image" ? "🖼" : "T"}</span><span class="t"></span>${l.from_post ? '<span class="tag">Caption</span>' : ""}`;
     li.querySelector(".t").textContent = label;
     li.addEventListener("click", () => { R.sel = l._id; refresh(); });
     ul.appendChild(li);
@@ -700,13 +733,13 @@ $("#tplBtn").addEventListener("click", () => { renderTemplates(); tplDialog.show
 $("#tplSave").addEventListener("click", async () => {
   const name = prompt("Template name", S.name || $("#tplName").textContent.replace(/^Templates$/, ""));
   if (!name) return;
-  const d = templateState(name.trim());
+  const d = templateFile(name.trim());
   S.name = d.name;
   await store.put(store.fileName(d.name), JSON.stringify(d, null, 1));
   R.locked = true; $("#tplName").textContent = d.name;
   syncPanel(); renderTemplates();
   status(`Saved “${d.name}”.`);
-  if (cloud.token()) cloud.sync().then(status, (e) => status(e.message));
+  cloudSync(false);
 });
 $("#tplImport").addEventListener("change", async (e) => {
   const f = e.target.files[0]; e.target.value = "";
@@ -720,7 +753,7 @@ $("#tplImport").addEventListener("change", async (e) => {
 });
 $("#tplDownload").addEventListener("click", () => {
   const name = S.name || "template";
-  saveBlob(new Blob([JSON.stringify(templateState(name), null, 1)], { type: "application/json" }), store.fileName(name));
+  saveBlob(new Blob([JSON.stringify(templateFile(name), null, 1)], { type: "application/json" }), store.fileName(name));
 });
 $("#tokenSave").addEventListener("click", async () => {
   const t = $("#tokenInput").value.trim(); if (!t) return;
@@ -728,14 +761,34 @@ $("#tokenSave").addEventListener("click", async () => {
   try {
     localStorage.setItem("rm.gh.login", await cloud.whoami());
     $("#tokenInput").value = "";
-    status(await cloud.sync());
+    status((await cloud.sync()).message);
   } catch (e) { cloud.setToken(""); status(e.message); alert(e.message); }
   renderTemplates();
 });
 $("#cloudSync").addEventListener("click", async () => {
   status("Syncing…");
-  try { status(await cloud.sync()); } catch (e) { status(e.message); }
+  await cloudSync(false);
   renderTemplates();
+});
+/** Sync with GitHub. Runs when the site opens, when you come back to it and after every save, so
+ *  templates saved on your PC or iPhone are here before you start. */
+let lastSync = 0;
+async function cloudSync(loud = false) {
+  if (!cloud.token()) return;
+  lastSync = Date.now();
+  try {
+    const res = await cloud.sync();
+    if (loud || res.downloaded.length) status(res.message);
+    // the template in use was changed on another device: reload it (your caption's words stay)
+    if (R.locked && S.name && res.downloaded.includes(store.fileName(S.name))) {
+      const t = await store.get(store.fileName(S.name));
+      if (t) { useTemplate(JSON.parse(t)); status(`“${S.name}” was updated on another device and reloaded.`); }
+    }
+    if (tplDialog.open) renderTemplates();
+  } catch (e) { status("Template sync failed: " + e.message); }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && Date.now() - lastSync > 20000) cloudSync();
 });
 $("#cloudOff").addEventListener("click", () => { cloud.setToken(""); localStorage.removeItem("rm.gh.login"); renderTemplates(); });
 
@@ -852,9 +905,9 @@ syncPanel();
 refresh();
 resetHistory();
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
-(async () => {   // pick up where you left off: the last template used
+(async () => {   // pick up where you left off: the last template used, then bring in your other devices' changes
   const last = localStorage.getItem("rm.lastTemplate");
-  if (!last) return;
-  const t = (await store.all()).find((x) => x.json.name === last);
+  const t = last && (await store.all()).find((x) => x.json.name === last);
   if (t) { useTemplate(t.json); resetHistory(); }
+  cloudSync();
 })();

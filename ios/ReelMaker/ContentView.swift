@@ -34,6 +34,8 @@ struct ContentView: View {
     @State private var showCloud = false
     @State private var saveName = ""
     @State private var showSave = false
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var lastAutoSync = Date.distantPast
 
     var body: some View {
         VStack(spacing: 0) {
@@ -114,7 +116,33 @@ struct ContentView: View {
             TextField("Name", text: $saveName)
             Button("Save") { saveTemplate() }
             Button("Cancel", role: .cancel) {}
-        } message: { Text("Saves the layout so every new video uses it, locked in place.") }
+        } message: { Text("Saves the layout so every new video uses it, locked in place. The caption box keeps its place and style, not its words.") }
+        .onAppear { autoSync() }
+        .onChange(of: scenePhase) { phase in if phase == .active { autoSync() } }
+        .onChange(of: cloud.syncCount) { _ in reloadIfUpdated() }
+    }
+
+    /// Bring in templates saved on your PC or the website whenever the app opens or comes back.
+    private func autoSync() {
+        guard cloud.signedIn, Date().timeIntervalSince(lastAutoSync) > 20 else { return }
+        lastAutoSync = Date()
+        Task {
+            do { _ = try await cloud.sync() } catch {
+                await MainActor.run { p.status = "Template sync failed: \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    /// After a sync: if the template in use was changed on another device, reload it (your caption's words stay).
+    private func reloadIfUpdated() {
+        let got = cloud.lastDownloaded
+        guard !got.isEmpty else { return }
+        if let name = p.templateName, p.locked, got.contains(Cloud.fileName(name)) {
+            applyTemplate(Cloud.folder.appendingPathComponent(Cloud.fileName(name)))
+            p.status = "“\(name)” was updated on another device and reloaded."
+        } else {
+            p.status = got.count == 1 ? "1 template updated from GitHub." : "\(got.count) templates updated from GitHub."
+        }
     }
 
     private var topBar: some View {
@@ -163,7 +191,11 @@ struct ContentView: View {
         cloud.reloadLocal()
         p.status = "Saved “\(name)”."
         if cloud.signedIn {
-            Task { let m = (try? await cloud.sync()) ?? "Saved here; cloud sync failed."; await MainActor.run { p.status = m } }
+            Task {
+                let m: String
+                do { m = try await cloud.sync() } catch { m = "Saved here; cloud sync failed: \(error.localizedDescription)" }
+                await MainActor.run { p.status = m }
+            }
         }
     }
 }
@@ -198,6 +230,7 @@ struct CanvasView: View {
         GeometryReader { g in
             let k = g.size.width / RW
             let vr = p.videoRect()
+            let caps = Set(Project.captionIndices(p.layers).map { p.layers[$0].id })
             ZStack(alignment: .topLeading) {
                 background
                 if p.videoURL != nil {
@@ -213,6 +246,20 @@ struct CanvasView: View {
                 }
                 if let ov = p.overlay {
                     Image(uiImage: ov).resizable().interpolation(.high).frame(width: g.size.width, height: g.size.height)
+                }
+                // an empty text box (a template's caption box before you type) shows where the words go;
+                // preview only, nothing is drawn in the reel
+                ForEach(p.layers.filter { $0.kind == .text && $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { l in
+                    let r = l.rect
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.gray.opacity(0.15))
+                        .overlay(RoundedRectangle(cornerRadius: 4)
+                            .strokeBorder(Color.gray.opacity(0.8), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                        .overlay(Text(caps.contains(l.id) ? "Caption" : "Empty text")
+                            .font(.caption2.weight(.semibold)).foregroundStyle(Color.gray))
+                        .frame(width: r.width * k, height: r.height * k)
+                        .offset(x: r.minX * k, y: r.minY * k)
+                        .allowsHitTesting(false)
                 }
                 if p.showZone {
                     let z = p.zoneRect

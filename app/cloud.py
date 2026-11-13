@@ -10,6 +10,8 @@ ID can live in the code. The token is kept encrypted with Windows DPAPI.
 
 import json
 import os
+import re
+import shutil
 import socket
 import time
 import urllib.error
@@ -309,6 +311,22 @@ def _stamp(path):
         return 0.0
 
 
+def _keep_previous(path, folder, keep=5):
+    """Before sync replaces or removes a template here, keep this copy in templates\\.previous
+    (the newest few per template), so a layout can never be lost to an older copy from another device."""
+    try:
+        bdir = os.path.join(folder, ".previous")
+        os.makedirs(bdir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        shutil.copy2(path, os.path.join(bdir, f"{stem}~{time.strftime('%Y-%m-%d %H-%M-%S')}.json"))
+        pat = re.compile(re.escape(stem) + r"~\d{4}-\d\d-\d\d \d\d-\d\d-\d\d\.json")
+        olds = sorted(f for f in os.listdir(bdir) if pat.fullmatch(f))
+        for f in olds[:-keep]:
+            os.remove(os.path.join(bdir, f))
+    except OSError:
+        pass
+
+
 def sync_templates(store, folder=TEMPLATE_DIR):
     """Two-way sync of *.json templates between `folder` and the cloud store.
     Newest saved_at wins; a template deleted on one side is deleted on the other."""
@@ -317,6 +335,7 @@ def sync_templates(store, folder=TEMPLATE_DIR):
     remote = {f["name"]: f for f in store.list() if f["name"].lower().endswith(".json")}
     local = {n: os.path.join(folder, n) for n in os.listdir(folder) if n.lower().endswith(".json")}
     up = down = removed = 0
+    got = []                             # names downloaded this time (the app reloads the one in use)
     new_manifest = {}
 
     def rstamp(r):
@@ -332,14 +351,18 @@ def sync_templates(store, folder=TEMPLATE_DIR):
                 new_manifest[name] = {"id": fid, "stamp": ls}
                 up += 1
             elif rs > ls + 0.5:
+                data = store.download(r["id"])
+                _keep_previous(lp, folder)
                 with open(lp, "wb") as f:
-                    f.write(store.download(r["id"]))
+                    f.write(data)
                 new_manifest[name] = {"id": r["id"], "stamp": rs}
                 down += 1
+                got.append(name)
             else:
                 new_manifest[name] = {"id": r["id"], "stamp": ls}
         elif lp and not r:
             if m:                        # was synced before, now gone from the cloud: deleted elsewhere
+                _keep_previous(lp, folder)
                 os.remove(lp)
                 removed += 1
             else:
@@ -357,5 +380,7 @@ def sync_templates(store, folder=TEMPLATE_DIR):
                     f.write(store.download(r["id"]))
                 new_manifest[name] = {"id": r["id"], "stamp": rstamp(r)}
                 down += 1
+                got.append(name)
     _save_manifest(new_manifest)
-    return {"uploaded": up, "downloaded": down, "removed": removed, "total": len(new_manifest)}
+    return {"uploaded": up, "downloaded": down, "removed": removed, "total": len(new_manifest),
+            "downloaded_names": got}

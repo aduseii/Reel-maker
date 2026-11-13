@@ -119,6 +119,8 @@ enum TextLayout {
 
     /// Draw a text layer into a UIKit context laid out in reel pixels (top-left origin).
     static func draw(_ l: Layer, in ctx: CGContext, hideWords: Bool = false) {
+        // no words yet (a template's caption box): nothing to show
+        if l.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hideWords { return }
         let lay = layout(l)
         let r = l.rect
         let ip = innerPad(l)

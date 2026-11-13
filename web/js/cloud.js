@@ -14,6 +14,7 @@ export const setToken = (t) => (t ? localStorage.setItem("rm.gh.token", t.trim()
 async function api(method, path, body) {
   const r = await fetch(API + path, {
     method,
+    cache: "no-store",       // GitHub lets browsers reuse answers for 60 s: always ask for the latest
     headers: { Authorization: `Bearer ${token()}`, Accept: "application/vnd.github+json", ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   }).catch(() => { throw new Error("Couldn't reach GitHub. Check your connection."); });
@@ -40,22 +41,29 @@ async function gist() {
 }
 
 async function text(f) {
-  if (f.truncated || f.content == null) return (await fetch(f.raw_url)).text();
+  if (f.truncated || f.content == null) return (await fetch(f.raw_url, { cache: "no-store" })).text();
   return f.content;
 }
 
-/** Newer wins on each side. Returns a short summary. */
-export async function sync() {
+/** Newer wins on each side. Returns { message, downloaded: [file names that came down] }.
+ *  One sync at a time: one asked for while another runs starts when that one ends. */
+let chain = Promise.resolve();
+export function sync() {
+  const run = chain.then(syncOnce, syncOnce);
+  chain = run.catch(() => {});
+  return run;
+}
+async function syncOnce() {
   const g = await gist();
   let idx = {};
   try { idx = JSON.parse(await text(g.files[INDEX])).templates || {}; } catch { /* empty index */ }
   const local = Object.fromEntries((await store.all()).map((t) => [t.file, t]));
   let down = 0, up = 0;
-  const uploads = {};
+  const uploads = {}, downloaded = [];
   for (const [name, f] of Object.entries(g.files)) {
     if (name === INDEX || !name.toLowerCase().endsWith(".json")) continue;
     const rs = Number(idx[name] || 0), l = local[name];
-    if (!l || rs > Number(l.json.saved_at || 0) + 0.5) { await store.put(name, await text(f)); down++; }
+    if (!l || rs > Number(l.json.saved_at || 0) + 0.5) { await store.put(name, await text(f)); down++; downloaded.push(name); }
   }
   for (const [name, l] of Object.entries(local)) {
     const ls = Number(l.json.saved_at || 0);
@@ -65,7 +73,7 @@ export async function sync() {
     uploads[INDEX] = { content: JSON.stringify({ templates: idx }, null, 1) };
     await api("PATCH", `/gists/${g.id}`, { files: uploads });
   }
-  return `Synced with GitHub: ${down} downloaded, ${up} uploaded.`;
+  return { message: `Synced with GitHub: ${down} downloaded, ${up} uploaded.`, downloaded };
 }
 
 export async function remove(file) {

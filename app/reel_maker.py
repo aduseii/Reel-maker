@@ -27,7 +27,8 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 import x_import  # noqa: E402  (X/Twitter link import)
 from core import (__version__, check_for_update, download_update, W, H, ACCENT, DEFAULT_FONT, PRESETS, VIDEO_EXT, IMAGE_EXT, WEIGHTS, APPDATA,
                   TEMPLATE_DIR, EMOJI, ImageLayer, TextLayer, color_hex, res_path, fmt_time,
-                  find_ffmpeg, download_ffmpeg, load_image_data, crisp_widths)
+                  find_ffmpeg, download_ffmpeg, load_image_data, crisp_widths, caption_boxes,
+                  strip_caption_words)
 
 # ---------------------------------------------------------------- theme
 C = dict(bg="#0D0E10", panel="#141518", raised="#1C1D21", raised2="#26272C", field="#0F1012",
@@ -985,6 +986,7 @@ class Canvas(QWidget):
         a.compose(p, a.frame, overlays=True)
         if a.show_guides.isChecked():
             self.draw_guides(p, s)
+        self.draw_empty_boxes(p, s)
         o = a.selected()
         if o and not a.locked:
             r = o.rect()
@@ -1004,6 +1006,30 @@ class Canvas(QWidget):
             p.drawRect(o.rect())
         self.draw_smart_guides(p, s)
         p.end()
+
+    def draw_empty_boxes(self, p, s):
+        """An empty text box (a template's caption box before you type) shows where the words will go.
+        Only on the preview: nothing is drawn in the reel or the cover."""
+        caps = caption_boxes(self.app.layers)
+        for o in self.app.layers:
+            if o.kind != "text" or o.text.strip() or getattr(o, "editing", False):
+                continue
+            r = o.rect()
+            p.save()
+            pen = QPen(QColor(150, 150, 150, 210), max(2.0, 1.5 / s))
+            pen.setStyle(Qt.DashLine)
+            p.setPen(pen)
+            p.setBrush(QColor(128, 128, 128, 40))
+            p.drawRoundedRect(r, 10, 10)
+            f = QFont(DEFAULT_FONT)
+            f.setPixelSize(int(max(18, min(o.size, 44))))
+            f.setWeight(QFont.DemiBold)
+            p.setFont(f)
+            p.setPen(QColor(160, 160, 160, 235))
+            msg = "Caption: double-click to type" if o in caps else "Empty text: double-click to type"
+            msg = QFontMetricsF(f).elidedText(msg, Qt.ElideRight, r.width() - 16)
+            p.drawText(r, Qt.AlignCenter, msg)
+            p.restore()
 
     def draw_guides(self, p, s):
         z = self.app.zone()
@@ -1459,6 +1485,7 @@ class ReelMaker(QMainWindow):
         import cloud
         self.cloud = cloud.GitHubCloud()
         self.cloud_busy = False
+        self.cloud_again = False
         if self.cloud.available and self.cloud.signed_in:
             QTimer.singleShot(3000, lambda: self.cloud_sync(quiet=True))
         QTimer.singleShot(2500, lambda: self.check_updates(quiet=True))
@@ -1995,9 +2022,10 @@ class ReelMaker(QMainWindow):
         self.txt_shadow = QCheckBox("Shadow")
         self.txt_shadow.toggled.connect(self.on_layer_controls)
         v.addWidget(self.txt_shadow)
-        self.txt_from_post = QCheckBox("Caption box for X imports")
-        self.txt_from_post.setToolTip("When you import from an X link, the post's text goes into this box. "
-                                      "If no box is marked, the first text box is used.")
+        self.txt_from_post = QCheckBox("Caption box")
+        self.txt_from_post.setToolTip("The box for each reel's own words. X imports put the post's text here, and "
+                                      "templates keep its place and style but not its words. If no box is ticked, "
+                                      "the first text box is the caption box.")
         self.txt_from_post.toggled.connect(self.on_layer_controls)
         v.addWidget(self.txt_from_post)
         self.txt_fit = QCheckBox("Auto size and place one-line text")
@@ -3277,7 +3305,7 @@ class ReelMaker(QMainWindow):
         path = self.template_path(name)
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.template_state(name), f)
+                json.dump(strip_caption_words(self.template_state(name)), f)
         except OSError as e:
             QMessageBox.warning(self, "Save template", f"Couldn't save the template:\n{e}")
             return
@@ -3296,8 +3324,13 @@ class ReelMaker(QMainWindow):
             if not quiet:
                 QMessageBox.warning(self, "Templates", f"Couldn't open that template:\n{e}")
             return False
+        # templates keep where the caption box is, not its words: the words already in your caption
+        # box come along (an X import, or a template updated on another device while you work)
+        words = next((o.text for o in caption_boxes(self.layers) if o.text.strip()), "")
         self.set_locked(False)
-        self.apply_state(d)
+        self.apply_state(strip_caption_words(d))
+        for o in caption_boxes(self.layers):
+            o.text = words
         self.template_name = d.get("name") or os.path.splitext(os.path.basename(path))[0]
         self.settings.setValue("last_template", path)
         self.sel = -1
@@ -4036,25 +4069,33 @@ class ReelMaker(QMainWindow):
             self.status("Signed out of GitHub.")
 
     def cloud_sync(self, quiet=True):
-        if self.cloud_busy or not (self.cloud.available and self.cloud.signed_in):
+        if not (self.cloud.available and self.cloud.signed_in):
+            return
+        if self.cloud_busy:
+            # e.g. a template saved while the start-up sync is still running: sync again when it ends,
+            # so the save always reaches GitHub
+            self.cloud_again = True
             return
         import cloud
         self.cloud_busy = True
+        self.cloud_again = False
         if not quiet:
             self.status("Syncing templates with GitHub…")
         before = self.template_name and self.template_path(self.template_name)
-        stamp = os.path.getmtime(before) if before and os.path.exists(before) else None
 
         def done(res, error):
             self.cloud_busy = False
+            if self.cloud_again:
+                QTimer.singleShot(0, lambda: self.cloud_sync(quiet=True))
             if error:
                 self.status(f"Template sync failed: {error}")
                 if not quiet:
                     QMessageBox.warning(self, "GitHub", error)
                 return
-            # if the template in use was changed on another computer, reload it
-            if before and self.locked:
-                if os.path.exists(before) and os.path.getmtime(before) != stamp:
+            # the template in use was changed on another device: reload it (your caption's words stay)
+            still = before and self.template_name and self.template_path(self.template_name) == before
+            if still and self.locked:
+                if os.path.basename(before) in res.get("downloaded_names", ()):
                     self.apply_template_file(before, quiet=True)
                 elif not os.path.exists(before):
                     self.detach_template()
@@ -4360,8 +4401,7 @@ class ReelMaker(QMainWindow):
         """Put the post's text in the template's caption box. Returns a note for the status bar."""
         if not text:
             return "The post has no text, so the caption box wasn't changed. "
-        texts = [o for o in self.layers if o.kind == "text"]
-        targets = [o for o in texts if getattr(o, "from_post", False)] or texts[:1]
+        targets = caption_boxes(self.layers)
         if not targets:
             t = TextLayer(text)
             t.w = max(200.0, self.zone().width() - 80)

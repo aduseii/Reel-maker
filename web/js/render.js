@@ -160,6 +160,7 @@ function roundRect(ctx, x, y, w, h, r) {
 export { roundRect };
 
 export function drawText(ctx, l) {
+  if (!(l.text || "").trim() && !l._editing) return;   // no words yet (a template's caption box): nothing to show
   const lay = layout(l), r = rectOf(l), ip = innerPad(l);
   const top = r.y + (l.style === "box" ? l.pad : 0), left = r.x + ip;
   ctx.save();

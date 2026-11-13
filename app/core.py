@@ -1,6 +1,6 @@
 """Reel Maker engine: encoder lookup, emoji, text layout and layers."""
 
-__version__ = "1.19.0"
+__version__ = "1.20.0"
 
 import os
 import re
@@ -497,6 +497,21 @@ class ImageLayer:
         p.restore()
 
 
+def caption_boxes(layers):
+    """The caption box(es): text boxes ticked "Caption box", otherwise the first text box.
+    X imports put the post's text there, and templates keep their place and style but not their words."""
+    texts = [o for o in layers if getattr(o, "kind", None) == "text"]
+    return [o for o in texts if getattr(o, "from_post", False)] or texts[:1]
+
+
+def strip_caption_words(state):
+    """A template keeps where the caption box is and how it looks, never the last reel's words."""
+    texts = [d for d in state.get("layers", []) if d.get("kind") == "text"]
+    for d in [d for d in texts if d.get("from_post")] or texts[:1]:
+        d["text"] = ""
+    return state
+
+
 class TextLayer:
     """A fixed-width text box: the width never grows, long text wraps to new lines.
     (x, y) is the centre of the top edge, so extra lines grow downward."""
@@ -661,6 +676,8 @@ class TextLayer:
         return QRectF(self.x - self.w / 2, self.y, self.w, self.h)
 
     def draw(self, p):
+        if not self.text.strip() and not getattr(self, "editing", False):
+            return                             # no words yet (a template's caption box): nothing to show
         lines, widths, lh, asc, desc, maxw = self.layout()
         r = self.rect()
         ip = self.inner_pad()
