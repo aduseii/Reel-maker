@@ -4,6 +4,12 @@
 @font-face { font-family: "Inter Display"; font-weight: 700; src: url(fonts/InterDisplay-Bold.ttf); font-display: swap; }
 @font-face { font-family: "Inter Display"; font-weight: 800; src: url(fonts/InterDisplay-ExtraBold.ttf); font-display: swap; }
 @font-face { font-family: "Inter Display"; font-weight: 900; src: url(fonts/InterDisplay-Black.ttf); font-display: swap; }
+@font-face { font-family: "Inter Display"; font-weight: 400; font-style: italic; src: url(fonts/InterDisplay-Italic.ttf); font-display: swap; }
+@font-face { font-family: "Inter Display"; font-weight: 500; font-style: italic; src: url(fonts/InterDisplay-MediumItalic.ttf); font-display: swap; }
+@font-face { font-family: "Inter Display"; font-weight: 600; font-style: italic; src: url(fonts/InterDisplay-SemiBoldItalic.ttf); font-display: swap; }
+@font-face { font-family: "Inter Display"; font-weight: 700; font-style: italic; src: url(fonts/InterDisplay-BoldItalic.ttf); font-display: swap; }
+@font-face { font-family: "Inter Display"; font-weight: 800; font-style: italic; src: url(fonts/InterDisplay-ExtraBoldItalic.ttf); font-display: swap; }
+@font-face { font-family: "Inter Display"; font-weight: 900; font-style: italic; src: url(fonts/InterDisplay-BlackItalic.ttf); font-display: swap; }
 
 :root {
   --bg: #0D0E10; --panel: #141518; --raised: #1C1D21; --raised2: #26272C; --line: #25262B; --line2: #33343A;

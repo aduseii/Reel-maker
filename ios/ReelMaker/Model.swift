@@ -30,8 +30,9 @@ struct Layer: Identifiable, Equatable {
     var text = "Your text here"
     var family = "Inter Display"
     var weight = 700
+    var italic = false
     var size: CGFloat = 64
-    var color = "#FFFFFFFF"
+    var color = "#FFFFFFFF"            // its alpha is the text's own opacity (words and emoji)
     var align = "center"
     var style = "box"                  // plain | box | highlight
     var boxColor = "#FF000000"
@@ -91,7 +92,7 @@ struct Layer: Identifiable, Equatable {
             if let r = raster { d["raster"] = r.base64EncodedString() }
             return d
         }
-        var d: [String: Any] = ["kind": "text", "text": text, "family": family, "weight": weight, "size": baseSize,
+        var d: [String: Any] = ["kind": "text", "text": text, "family": family, "weight": weight, "italic": italic, "size": baseSize,
                                 "align": align, "style": style, "box_alpha": boxAlpha, "radius": radius, "pad": pad,
                                 "spacing": spacing, "shadow": shadow, "opacity": opacity, "w": w, "x": x, "y": y,
                                 "from_post": fromPost, "fit_one_line": fitOneLine, "color": color, "box_color": boxColor]
@@ -118,6 +119,7 @@ struct Layer: Identifiable, Equatable {
         l.text = d["text"] as? String ?? ""
         l.family = d["family"] as? String ?? "Inter Display"
         l.weight = (d["weight"] as? NSNumber)?.intValue ?? 700
+        l.italic = d["italic"] as? Bool ?? false
         l.size = num("size", 64)
         l.align = d["align"] as? String ?? "center"
         l.style = d["style"] as? String ?? "box"
@@ -157,6 +159,18 @@ extension UIColor {
         func c(_ x: CGFloat) -> Int { Int((min(max(x, 0), 1) * 255).rounded()) }
         return String(format: "#%02X%02X%02X%02X", c(a), c(r), c(g), c(b))
     }
+}
+
+/// The opacity stored in an "#AARRGGBB" colour (1 for "#RRGGBB").
+func hexAlpha(_ hex: String) -> CGFloat {
+    var a: CGFloat = 0
+    UIColor(hex: hex).getRed(nil, green: nil, blue: nil, alpha: &a)
+    return a
+}
+
+/// The same colour with a different opacity.
+func hexWithAlpha(_ hex: String, _ alpha: CGFloat) -> String {
+    UIColor(hex: hex).withAlphaComponent(min(max(alpha, 0), 1)).hexARGB
 }
 
 /// Binds a SwiftUI ColorPicker to a hex string.

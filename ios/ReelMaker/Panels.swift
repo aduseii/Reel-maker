@@ -169,7 +169,14 @@ struct TextControls: View {
                         Text("Regular").tag(400); Text("Medium").tag(500); Text("Semibold").tag(600)
                         Text("Bold").tag(700); Text("Heavy").tag(800); Text("Black").tag(900)
                     }
-                    ColorPicker("Text colour", selection: hexBinding({ p.layers[p.selectedIndex ?? 0].color }, { v in p.edit(p.selectedID) { $0.color = v } }))
+                    Toggle(isOn: p.lb(\.italic, false)) { Text("Italic").italic() }
+                    // a new colour keeps the text's opacity; the slider below sets it
+                    ColorPicker("Text colour", selection: hexBinding({ p.layers[p.selectedIndex ?? 0].color }, { v in
+                        p.edit(p.selectedID) { $0.color = hexWithAlpha(v, hexAlpha($0.color)) }
+                    }), supportsOpacity: false)
+                    SliderRow(label: "Text opacity", value: Binding(get: { hexAlpha(p.layers[p.selectedIndex ?? 0].color) * 100 },
+                                                                    set: { v in p.edit(p.selectedID) { $0.color = hexWithAlpha($0.color, v / 100) } }),
+                              range: 0...100, suffix: "%")
                     Picker("Align", selection: p.lb(\.align, "center")) {
                         Image(systemName: "text.alignleft").tag("left")
                         Image(systemName: "text.aligncenter").tag("center")

@@ -24,6 +24,12 @@
 		<string>InterDisplay-Bold.ttf</string>
 		<string>InterDisplay-ExtraBold.ttf</string>
 		<string>InterDisplay-Black.ttf</string>
+		<string>InterDisplay-Italic.ttf</string>
+		<string>InterDisplay-MediumItalic.ttf</string>
+		<string>InterDisplay-SemiBoldItalic.ttf</string>
+		<string>InterDisplay-BoldItalic.ttf</string>
+		<string>InterDisplay-ExtraBoldItalic.ttf</string>
+		<string>InterDisplay-BlackItalic.ttf</string>
 	</array>
 	<key>NSPhotoLibraryUsageDescription</key><string>Reel Maker opens videos and logos from your photos.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key><string>Reel Maker saves finished reels and covers to your photos.</string>

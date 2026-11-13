@@ -25,11 +25,20 @@ enum TextLayout {
     private static var cache: [String: Result] = [:]
 
     static func font(_ l: Layer) -> UIFont {
-        let names = [400: "InterDisplay-Regular", 500: "InterDisplay-Medium", 600: "InterDisplay-SemiBold",
-                     700: "InterDisplay-Bold", 800: "InterDisplay-ExtraBold", 900: "InterDisplay-Black"]
+        let upright = [400: "InterDisplay-Regular", 500: "InterDisplay-Medium", 600: "InterDisplay-SemiBold",
+                       700: "InterDisplay-Bold", 800: "InterDisplay-ExtraBold", 900: "InterDisplay-Black"]
+        let italic = [400: "InterDisplay-Italic", 500: "InterDisplay-MediumItalic", 600: "InterDisplay-SemiBoldItalic",
+                      700: "InterDisplay-BoldItalic", 800: "InterDisplay-ExtraBoldItalic", 900: "InterDisplay-BlackItalic"]
         let w = [400, 500, 600, 700, 800, 900].min(by: { abs($0 - l.weight) < abs($1 - l.weight) }) ?? 700
-        if l.family != "Inter Display", let f = UIFont(name: l.family, size: l.size) { return f }
-        return UIFont(name: names[w] ?? "InterDisplay-Bold", size: l.size)
+        if l.family != "Inter Display", let f = UIFont(name: l.family, size: l.size) {
+            guard l.italic else { return f }
+            if let d = f.fontDescriptor.withSymbolicTraits(f.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+                return UIFont(descriptor: d, size: l.size)
+            }
+            return f
+        }
+        if l.italic, let f = UIFont(name: italic[w] ?? "InterDisplay-BoldItalic", size: l.size) { return f }
+        return UIFont(name: upright[w] ?? "InterDisplay-Bold", size: l.size)
             ?? UIFont.systemFont(ofSize: l.size, weight: w >= 700 ? .bold : .regular)
     }
 
@@ -54,7 +63,7 @@ enum TextLayout {
     }
 
     static func layout(_ l: Layer) -> Result {
-        let key = "\(l.text)|\(l.family)|\(l.weight)|\(l.size)|\(l.w)|\(l.style)|\(l.pad)|\(l.spacing)"
+        let key = "\(l.text)|\(l.family)|\(l.weight)|\(l.italic)|\(l.size)|\(l.w)|\(l.style)|\(l.pad)|\(l.spacing)"
         if let r = cache[key] { return r }
         let f = font(l)
         let ew = l.size * 1.12
@@ -144,7 +153,8 @@ enum TextLayout {
         if !hideWords {
             let f = font(l)
             let textH = lay.asc + lay.desc
-            var passes: [(UIColor, CGFloat)] = l.shadow ? [(UIColor(white: 0, alpha: 120 / 255), l.size * 0.05)] : []
+            let ta = hexAlpha(l.color)            // the shadow and emoji fade with the words
+            var passes: [(UIColor, CGFloat)] = l.shadow ? [(UIColor(white: 0, alpha: 120 / 255 * ta), l.size * 0.05)] : []
             passes.append((UIColor(hex: l.color), 0))
             for (color, off) in passes {
                 for (i, ln) in lay.lines.enumerated() {
@@ -160,8 +170,11 @@ enum TextLayout {
                             let es = l.size * 1.02
                             let ef = emojiFont(es * 0.84)
                             let sz = (e as NSString).size(withAttributes: [.font: ef])
+                            ctx.saveGState()
+                            ctx.setAlpha(ta)
                             (e as NSString).draw(at: CGPoint(x: x + (w - sz.width) / 2, y: lineTop + (lay.lh - sz.height) / 2),
                                                  withAttributes: [.font: ef])
+                            ctx.restoreGState()
                         default: break
                         }
                         x += t.width

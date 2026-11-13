@@ -43,13 +43,28 @@ export const WEIGHTS = [[400, "Regular"], [500, "Medium"], [600, "Semibold"], [7
 export function fontOf(l, size = l.size) {
   const w = WEIGHTS.map((x) => x[0]).reduce((a, b) => (Math.abs(b - l.weight) < Math.abs(a - l.weight) ? b : a));
   const fam = l.family && l.family !== "Inter Display" ? `"${l.family}", "Inter Display"` : `"Inter Display"`;
-  return `${w} ${size}px ${fam}, system-ui, sans-serif`;
+  return `${l.italic ? "italic " : ""}${w} ${size}px ${fam}, system-ui, sans-serif`;
+}
+/** The text's own opacity (words and emoji) is the alpha of its colour, "#AARRGGBB", as in the Windows app. */
+export function textAlpha(l) {
+  const h = (l.color || "").replace("#", "");
+  return h.length === 8 ? parseInt(h.slice(0, 2), 16) / 255 : 1;
+}
+export function withAlpha(hex, a) {
+  const rgb = (hex || "#FFFFFF").replace("#", "").slice(-6).toUpperCase();
+  return "#" + Math.round(Math.max(0, Math.min(1, a)) * 255).toString(16).padStart(2, "0").toUpperCase() + rgb;
 }
 export const innerPad = (l) => (l.style === "box" ? l.pad : l.style === "highlight" ? l.size * 0.32 : 0);
 
 const layoutCache = new Map();
+// Canvas text only uses a web font once the browser has loaded it, so load every weight (upright and
+// italic) up front, then measure again.
+if (document.fonts) {
+  Promise.allSettled(WEIGHTS.flatMap(([w]) => ["", "italic "].map((st) => document.fonts.load(`${st}${w} 64px "Inter Display"`))))
+    .then(() => { layoutCache.clear(); onAssetLoaded(); });
+}
 export function layout(l) {
-  const key = [l.text, l.family, l.weight, l.size, l.w, l.style, l.pad, l.spacing].join("|");
+  const key = [l.text, l.family, l.weight, l.italic ? 1 : 0, l.size, l.w, l.style, l.pad, l.spacing].join("|");
   const hit = layoutCache.get(key);
   if (hit) return hit;
   mctx.font = fontOf(l);
@@ -165,7 +180,8 @@ export function drawText(ctx, l) {
   if (!l._editing) {
     ctx.textBaseline = "alphabetic";
     const textH = lay.asc + lay.desc;
-    const passes = l.shadow ? [["rgba(0,0,0,0.47)", l.size * 0.05]] : [];
+    const ta = textAlpha(l);                         // the shadow and emoji fade with the words
+    const passes = l.shadow ? [[`rgba(0,0,0,${(0.47 * ta).toFixed(3)})`, l.size * 0.05]] : [];
     passes.push([css(l.color), 0]);
     for (const [color, off] of passes) {
       lay.lines.forEach((ln, i) => {
@@ -179,7 +195,9 @@ export function drawText(ctx, l) {
             const img = APPLE ? null : emojiImage(t.s);
             if (img && img.complete && img.naturalWidth) {
               ctx.imageSmoothingQuality = "high";
+              ctx.globalAlpha = (l.opacity ?? 1) * ta;
               ctx.drawImage(img, x + (t.w - es) / 2, ey, es, es);
+              ctx.globalAlpha = l.opacity ?? 1;
             } else if (APPLE || !img) {
               ctx.font = `${es * 0.84}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
               ctx.fillStyle = color; ctx.textAlign = "center"; ctx.textBaseline = "middle";

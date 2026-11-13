@@ -1,10 +1,12 @@
 // Works offline once opened: the app's own files are kept, and always refreshed from the
 // network when there is one (so updates arrive straight away).
-const CACHE = "reelmaker-v3";
+const CACHE = "reelmaker-v4";
 const CORE = ["./", "index.html", "style.css", "js/app.js", "js/render.js", "js/export.js", "js/store.js", "js/cloud.js", "js/ximport.js",
   "vendor/mp4-muxer.mjs", "manifest.webmanifest", "icons/favicon.png", "icons/icon-192.png",
   "fonts/InterDisplay-Regular.ttf", "fonts/InterDisplay-Medium.ttf", "fonts/InterDisplay-SemiBold.ttf",
-  "fonts/InterDisplay-Bold.ttf", "fonts/InterDisplay-ExtraBold.ttf", "fonts/InterDisplay-Black.ttf"];
+  "fonts/InterDisplay-Bold.ttf", "fonts/InterDisplay-ExtraBold.ttf", "fonts/InterDisplay-Black.ttf",
+  "fonts/InterDisplay-Italic.ttf", "fonts/InterDisplay-MediumItalic.ttf", "fonts/InterDisplay-SemiBoldItalic.ttf",
+  "fonts/InterDisplay-BoldItalic.ttf", "fonts/InterDisplay-ExtraBoldItalic.ttf", "fonts/InterDisplay-BlackItalic.ttf"];
 
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => { e.waitUntil(self.clients.claim()); });

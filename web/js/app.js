@@ -1,5 +1,5 @@
 import { RW, RH, PRESETS, WEIGHTS, css, toInput, fromInput, layout, heightOf, rectOf, moveTo, drawLayers,
-         drawBackground, drawVideo, drawText, roundRect, setOnAssetLoaded } from "./render.js";
+         drawBackground, drawVideo, drawText, roundRect, setOnAssetLoaded, textAlpha, withAlpha } from "./render.js";
 import { exportReel } from "./export.js";
 import * as store from "./store.js";
 import * as cloud from "./cloud.js";
@@ -31,7 +31,7 @@ overlay.width = RW; overlay.height = RH;
 
 const newText = (text = "Your text here") => ({
   kind: "text", text, family: "Inter Display", weight: 700, size: 64, color: "#FFFFFFFF", align: "center", style: "box",
-  box_color: "#FF000000", box_alpha: 0.55, radius: 28, pad: 30, spacing: 1.18, shadow: false, opacity: 1, w: 760,
+  box_color: "#FF000000", box_alpha: 0.55, radius: 28, pad: 30, spacing: 1.18, shadow: false, italic: false, opacity: 1, w: 760,
   x: RW / 2, y: RH / 2, attach_gap: null, from_post: false, fit_one_line: false, _id: nextId++,
 });
 const selected = () => S.layers.find((l) => l._id === R.sel) || null;
@@ -451,14 +451,16 @@ async function grabCover() {
 // generic sliders: data-k = "video.scale" | "cover.zoom" | "l.size" …
 function getK(k) {
   const [a, b] = k.split(".");
-  if (a === "l") { const l = selected(); return l ? (b === "size" ? baseSize(l) : l[b]) : 0; }
+  if (a === "l") { const l = selected(); return l ? (b === "size" ? baseSize(l) : b === "text_alpha" ? textAlpha(l) : l[b]) : 0; }
   return S[a][b];
 }
 function setK(k, v) {
   const [a, b] = k.split(".");
   if (a === "l") {
     const l = selected(); if (!l) return;
-    if (b === "size" && l._fitBase != null) l._fitBase = v; else l[b] = v;
+    if (b === "size" && l._fitBase != null) l._fitBase = v;
+    else if (b === "text_alpha") l.color = withAlpha(l.color, v);
+    else l[b] = v;
   } else S[a][b] = v;
 }
 $$(".slider").forEach((el) => {
@@ -499,6 +501,7 @@ const checks = [
   bindCheck("#showZone", () => R.showZone, (v) => (R.showZone = v)),
   bindCheck("#clamp", () => S.clamp, (v) => (S.clamp = v)),
   bindCheck("#shadow", () => selected()?.shadow, (v) => (selected().shadow = v)),
+  bindCheck("#italic", () => selected()?.italic, (v) => (selected().italic = v)),
   bindCheck("#tSit", () => selected()?.attach_gap != null, (v) => (selected().attach_gap = v ? 24 : null)),
   bindCheck("#iSit", () => selected()?.attach_gap != null, (v) => (selected().attach_gap = v ? 24 : null)),
   bindCheck("#tFit", () => selected()?.fit_one_line, (v) => { const l = selected(); l.fit_one_line = v; if (!v) unfit(l); }),
@@ -516,7 +519,7 @@ function bindColor(id, get, set) {
 }
 const colors = [
   bindColor("#bgColor", () => S.background.color, (v) => { S.background.color = v; S.background.mode = "custom"; }),
-  bindColor("#tColor", () => selected()?.color, (v) => (selected().color = v)),
+  bindColor("#tColor", () => selected()?.color, (v) => (selected().color = withAlpha(v, textAlpha(selected())))),
   bindColor("#boxColor", () => selected()?.box_color, (v) => (selected().box_color = v)),
   bindColor("#titleColor", () => S.cover.title_color, (v) => (S.cover.title_color = v)),
 ];
