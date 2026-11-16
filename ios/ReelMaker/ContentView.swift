@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import AVKit
+import Combine
 
 enum Tab: String, CaseIterable { case frame = "Frame", layers = "Layers", cover = "Cover", export = "Export" }
 
@@ -40,6 +41,16 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             topBar
+            if p.templateDirty, let name = p.templateName {
+                HStack(spacing: 10) {
+                    Text("“\(name)” has unsaved changes").font(.subheadline.weight(.semibold)).foregroundStyle(accent).lineLimit(1)
+                    Spacer()
+                    Button("Discard") { discardChanges() }.buttonStyle(.bordered)
+                    Button("Save") { saveChanges() }.buttonStyle(.borderedProminent).foregroundStyle(.black)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 6)
+                .background(accent.opacity(0.12))
+            }
             Group {
                 if tab == .cover { CoverEditor() } else { CanvasView(onSelect: { tab = .layers }) }
             }
@@ -120,6 +131,7 @@ struct ContentView: View {
         .onAppear { autoSync() }
         .onChange(of: scenePhase) { phase in if phase == .active { autoSync() } }
         .onChange(of: cloud.syncCount) { _ in reloadIfUpdated() }
+        .onReceive(p.objectWillChange.debounce(for: .milliseconds(300), scheduler: RunLoop.main)) { _ in p.updateDirty() }
     }
 
     /// Bring in templates saved on your PC or the website whenever the app opens or comes back.
@@ -160,12 +172,16 @@ struct ContentView: View {
                     Button(t.name) { applyTemplate(t.file) }
                 }
                 Divider()
-                Button { saveName = p.templateName ?? ""; showSave = true } label: { Label("Save as template…", systemImage: "square.and.arrow.down") }
+                if let name = p.templateName {
+                    Button { saveChanges() } label: { Label("Save changes to “\(name)”", systemImage: "checkmark.circle") }
+                        .disabled(!p.templateDirty)
+                }
+                Button { saveName = ""; showSave = true } label: { Label("Save as new template…", systemImage: "square.and.arrow.down") }
                 Button { showCloud = true } label: {
                     Label(cloud.signedIn ? "Cloud (\(cloud.login ?? "GitHub"))" : "Sign in with GitHub", systemImage: "icloud")
                 }
             } label: {
-                Label(p.templateName ?? "Templates", systemImage: "square.stack").lineLimit(1)
+                Label((p.templateName ?? "Templates") + (p.templateDirty ? " •" : ""), systemImage: "square.stack").lineLimit(1)
             }
             Button { p.locked.toggle() } label: {
                 Image(systemName: p.locked ? "lock.fill" : "lock.open").foregroundStyle(p.locked ? accent : .secondary)
@@ -182,12 +198,26 @@ struct ContentView: View {
         p.status = "Using “\(p.templateName ?? "template")”. Layout locked; you can still change the words."
     }
 
+    /// One tap: save what you changed into the template you're using (and lock it again).
+    private func saveChanges() {
+        guard let name = p.templateName else { saveName = ""; showSave = true; return }
+        saveName = name
+        saveTemplate()
+    }
+
+    private func discardChanges() {
+        guard let name = p.templateName else { return }
+        applyTemplate(Cloud.folder.appendingPathComponent(Cloud.fileName(name)))
+        p.status = "Back to “\(name)” as it was saved."
+    }
+
     private func saveTemplate() {
         let name = saveName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty, let d = try? JSONSerialization.data(withJSONObject: p.templateDict(name: name), options: [.prettyPrinted]) else { return }
         try? d.write(to: Cloud.folder.appendingPathComponent(Cloud.fileName(name)))
         p.templateName = name
         p.locked = true
+        p.markTemplateSaved()
         cloud.reloadLocal()
         p.status = "Saved “\(name)”."
         if cloud.signedIn {

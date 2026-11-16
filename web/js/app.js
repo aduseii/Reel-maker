@@ -214,12 +214,52 @@ function commit() {
     updateUndo();
   }, 250);
 }
-function updateUndo() { $("#undo").disabled = history.length < 2; $("#redo").disabled = !future.length; }
+function updateUndo() { $("#undo").disabled = history.length < 2; $("#redo").disabled = !future.length; updateTemplateUI(); }
+
+// ---------------------------------------------------------------- "Save changes" to the template in use
+let tplSaved = null;            // the template as saved, to tell when it's been changed
+function templateCompare() {
+  const d = templateFile("");
+  delete d.saved_at; delete d.name;
+  for (const l of d.layers) if (l.attach_gap != null || l.fit_one_line) delete l.y;   // placed automatically
+  return JSON.stringify(d);
+}
+const markTemplateSaved = () => { tplSaved = S.name ? templateCompare() : null; updateTemplateUI(); };
+const templateDirty = () => !!S.name && tplSaved != null && templateCompare() !== tplSaved;
+let toldDirty = false;
+function updateTemplateUI() {
+  const dirty = templateDirty();
+  $("#tplName").textContent = S.name ? S.name + (dirty ? " •" : "") : "Templates";
+  $("#tplBtn").title = dirty ? `You've changed “${S.name}”. Save changes to keep them, or Discard.` : "Templates";
+  $("#tplChanges").hidden = !dirty;
+  $("#tplDiscard").hidden = !dirty;
+  $("#tplBar").hidden = !dirty;                 // phones show a bar under the top bar instead
+  document.body.classList.toggle("tpl-dirty", dirty);
+  $("#tplBarText").textContent = `“${S.name}” has unsaved changes`;
+  if (dirty && !toldDirty && !MOBILE()) { toldDirty = true; status(`Changes to “${S.name}” aren't saved yet: Save changes (Ctrl+S) keeps them.`); }
+  if (!dirty) toldDirty = false;
+}
+async function saveTemplateChanges() {
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  if (!S.name) { $("#tplSave").click(); return; }
+  const d = templateFile(S.name);
+  await store.put(store.fileName(d.name), JSON.stringify(d, null, 1));
+  R.locked = true;
+  markTemplateSaved();
+  syncPanel();
+  status(`Saved “${d.name}”. The layout is locked again.`);
+  cloudSync(false);
+}
+async function discardTemplateChanges() {
+  if (!S.name) return;
+  const t = await store.get(store.fileName(S.name));
+  if (t) { useTemplate(JSON.parse(t)); status(`Back to “${S.name}” as it was saved.`); }
+}
 function restore(snap) {
   const d = JSON.parse(snap);
-  const locked = R.locked;
+  const locked = R.locked, name = S.name;
   applyState(d.s);
-  R.locked = locked;
+  R.locked = locked; S.name = name;          // undo changes the layout, not which template is in use
   if (R.duration) { R.trimStart = d.trim[0]; R.trimEnd = d.trim[1]; }
   R.sel = S.layers.find((l) => l._id === d.sel) ? d.sel : null;
   refresh();
@@ -270,9 +310,9 @@ function useTemplate(json) {
   applyState(json);
   captionBoxes(S.layers).forEach((l) => (l.text = words));
   R.sel = null; R.locked = true;
-  $("#tplName").textContent = json.name || "Template";
   localStorage.setItem("rm.lastTemplate", json.name || "");
   refresh();
+  markTemplateSaved();
   commit();
   status(`Using “${json.name || "template"}”. Layout locked; you can still change the words.`);
 }
@@ -693,6 +733,11 @@ $("#play").addEventListener("click", togglePlay);
 $("#undo").addEventListener("click", undo);
 $("#redo").addEventListener("click", redo);
 document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {      // save the template (not the web page)
+    e.preventDefault();
+    if (e.shiftKey) $("#tplSave").click(); else saveTemplateChanges();
+    return;
+  }
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
   if (typing) return;
   if (e.code === "Space") { e.preventDefault(); if (!e.repeat) togglePlay(); }
@@ -730,13 +775,19 @@ async function renderTemplates() {
 }
 $("#tokenLink").href = cloud.TOKEN_URL;
 $("#tplBtn").addEventListener("click", () => { renderTemplates(); tplDialog.showModal(); });
+$("#tplChanges").addEventListener("click", saveTemplateChanges);
+$("#tplBarSave").addEventListener("click", saveTemplateChanges);
+$("#tplBarDiscard").addEventListener("click", discardTemplateChanges);
+$("#tplDiscard").addEventListener("click", discardTemplateChanges);
 $("#tplSave").addEventListener("click", async () => {
   const name = prompt("Template name", S.name || $("#tplName").textContent.replace(/^Templates$/, ""));
   if (!name) return;
   const d = templateFile(name.trim());
   S.name = d.name;
   await store.put(store.fileName(d.name), JSON.stringify(d, null, 1));
-  R.locked = true; $("#tplName").textContent = d.name;
+  R.locked = true;
+  localStorage.setItem("rm.lastTemplate", d.name);
+  markTemplateSaved();
   syncPanel(); renderTemplates();
   status(`Saved “${d.name}”.`);
   cloudSync(false);

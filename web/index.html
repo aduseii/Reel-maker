@@ -29,9 +29,13 @@
   <button class="icon" id="undo" title="Undo (Ctrl+Z)" disabled><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
   <button class="icon" id="redo" title="Redo (Ctrl+Y)" disabled><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
   <button class="icon" id="lock" title="Lock the layout"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path id="lockShackle" d="M8 11V7a4 4 0 0 1 8 0"/></svg></button>
+  <button class="btn primary" id="tplChanges" title="Save these changes to the template (Ctrl+S)" hidden><svg viewBox="0 0 24 24"><path d="M5 12.5 10 17 19 7"/></svg><span>Save changes</span></button>
+  <button class="btn" id="tplDiscard" title="Go back to the template as it was saved" hidden><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg><span>Discard</span></button>
   <button class="btn" id="tplBtn"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16"/></svg><span id="tplName">Templates</span></button>
   <button class="btn primary" id="exportBtn"><svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg><span>Export</span></button>
 </header>
+<div class="tplBar" id="tplBar" hidden><span id="tplBarText"></span><span class="grow"></span>
+  <button class="btn" id="tplBarDiscard">Discard</button><button class="btn primary" id="tplBarSave">Save</button></div>
 
 <main>
   <section class="stage">
@@ -157,7 +161,7 @@
     <div class="dlgHead"><h2>Templates</h2><button class="icon" value="close" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
     <ul id="tplList" class="tpls"></ul>
     <div class="toolbar wrap">
-      <button type="button" class="btn primary" id="tplSave">Save current layout…</button>
+      <button type="button" class="btn primary" id="tplSave">Save as new template…</button>
       <label class="btn">Import file<input type="file" id="tplImport" accept=".json,application/json" hidden></label>
       <button type="button" class="btn" id="tplDownload">Download current</button>
     </div>

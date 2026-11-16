@@ -1544,6 +1544,8 @@ class ReelMaker(QMainWindow):
         sc.activated.connect(self.space_pressed)
         dl = QShortcut(QKeySequence(Qt.Key_Delete), self.canvas)
         dl.activated.connect(self.remove_layer)
+        QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_template_changes)
+        QShortcut(QKeySequence("Ctrl+Shift+S"), self, activated=lambda: self.save_template())
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo)
         QShortcut(QKeySequence("Ctrl+Y"), self, activated=self.redo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self.redo)
@@ -1596,6 +1598,21 @@ class ReelMaker(QMainWindow):
         self.template_chip.setFixedHeight(24)
         self.template_chip.hide()
         l.addWidget(self.template_chip)
+        self.tpl_save_btn = QPushButton("Save changes")
+        self.tpl_save_btn.setObjectName("primary")
+        self.tpl_save_btn.setCursor(Qt.PointingHandCursor)
+        self.tpl_save_btn.setToolTip("Save these changes to the template (Ctrl+S)")
+        self.tpl_save_btn.clicked.connect(self.save_template_changes)
+        self.tpl_save_btn.hide()
+        l.addWidget(self.tpl_save_btn)
+        self.tpl_discard_btn = QPushButton("Discard")
+        self.tpl_discard_btn.setObjectName("ghost")
+        self.tpl_discard_btn.setCursor(Qt.PointingHandCursor)
+        self.tpl_discard_btn.setToolTip("Go back to the template as it was saved")
+        self.tpl_discard_btn.clicked.connect(self.discard_template_changes)
+        self.tpl_discard_btn.hide()
+        l.addWidget(self.tpl_discard_btn)
+        self.tpl_saved = None            # the template as saved, to tell when it's been changed
         self.lock_btn = QToolButton()
         self.lock_btn.setObjectName("ghost")
         self.lock_btn.setCheckable(True)
@@ -3250,11 +3267,12 @@ class ReelMaker(QMainWindow):
     def fill_template_menu(self):
         m = self.tpl_menu
         m.clear()
-        save = m.addAction("Save current layout as template…")
+        save = m.addAction("Save as new template…\tCtrl+Shift+S")
         save.triggered.connect(self.save_template)
         if self.template_name:
-            upd = m.addAction(f"Update “{self.template_name}”")
-            upd.triggered.connect(lambda: self.save_template(self.template_name))
+            upd = m.addAction(f"Save changes to “{self.template_name}”\tCtrl+S")
+            upd.triggered.connect(self.save_template_changes)
+            upd.setEnabled(self.template_dirty())
         m.addSeparator()
         tpls = self.list_templates()
         if not tpls:
@@ -3312,8 +3330,9 @@ class ReelMaker(QMainWindow):
         self.template_name = name
         self.settings.setValue("last_template", path)
         self.lock_btn.setChecked(True)
+        self.mark_template_saved()
         self.update_lock_ui()
-        self.status(f"Saved template “{name}”. The layout is locked; unlock it to make changes.")
+        self.status(f"Saved “{name}”. The layout is locked again; unlock it to make more changes.")
         self.cloud_sync(quiet=True)
 
     def apply_template_file(self, path, quiet=False):
@@ -3340,6 +3359,8 @@ class ReelMaker(QMainWindow):
         self.set_locked(True)
         self.changed()
         self.record()
+        self.mark_template_saved()
+        self.update_template_ui()
         if not quiet:
             self.status(f"Using template “{self.template_name}”. Layout locked; you can still change the words.")
         return True
@@ -3415,6 +3436,7 @@ class ReelMaker(QMainWindow):
     def update_undo_ui(self):
         self.undo_btn.setEnabled(len(self.history) > 1)
         self.redo_btn.setEnabled(bool(self.future))
+        self.update_template_ui()
 
     def undo(self):
         self.record()                     # keep anything still waiting to be recorded
@@ -3483,8 +3505,56 @@ class ReelMaker(QMainWindow):
         self.status(f"Deleted template “{name}”.")
         self.cloud_sync(quiet=True)
 
+    # ---- "Save changes": templates you've changed since they were saved
+    def template_compare(self):
+        """The template part of what's on screen (no caption words, no save time) for comparing."""
+        d = strip_caption_words(self.template_state("", light=True))
+        d.pop("saved_at", None)
+        for ld in d.get("layers", []):
+            if ld.get("attach_gap") is not None or ld.get("fit_one_line"):
+                ld.pop("y", None)       # placed automatically (follows the video / the caption's length)
+        return json.dumps(d, sort_keys=True)
+
+    def mark_template_saved(self):
+        self.tpl_saved = self.template_compare() if self.template_name else None
+
+    def template_dirty(self):
+        return bool(self.template_name) and self.tpl_saved is not None and self.template_compare() != self.tpl_saved
+
+    def update_template_ui(self):
+        if not hasattr(self, "tpl_save_btn"):
+            return
+        dirty = self.template_dirty()
+        if self.template_name:
+            self.template_chip.setText(self.template_name + ("  •  edited" if dirty else ""))
+            self.template_chip.setToolTip("You've changed this template. Save changes to keep them, or Discard."
+                                          if dirty else "The template you're using")
+            self.template_chip.show()
+        else:
+            self.template_chip.hide()
+        self.tpl_save_btn.setVisible(dirty)
+        self.tpl_discard_btn.setVisible(dirty)
+
+    def save_template_changes(self):
+        """Ctrl+S / "Save changes": overwrite the template in use; with none in use, save a new one."""
+        if self.canvas.editor:
+            self.canvas.finish_edit()
+        if not self.template_name:
+            self.save_template()
+            return
+        self.save_template(self.template_name)
+
+    def discard_template_changes(self):
+        if not self.template_name:
+            return
+        path = self.template_path(self.template_name)
+        if os.path.exists(path):
+            self.apply_template_file(path, quiet=True)
+            self.status(f"Back to “{self.template_name}” as it was saved.")
+
     def detach_template(self):
         self.template_name = None
+        self.tpl_saved = None
         self.settings.setValue("last_template", "")
         self.lock_btn.setChecked(False)
         self.update_lock_ui()
@@ -3505,11 +3575,7 @@ class ReelMaker(QMainWindow):
         self.lock_btn.setIcon(icon("lock" if lk else "unlock", C["accent"] if lk else C["muted"], 18))
         self.lock_btn.setToolTip("Layout locked. Click to unlock and edit." if lk
                                  else "Lock the layout so nothing can be moved")
-        if self.template_name:
-            self.template_chip.setText(self.template_name)
-            self.template_chip.show()
-        else:
-            self.template_chip.hide()
+        self.update_template_ui()
         for w_ in self.frame_geometry:
             w_.setEnabled(not lk)
         self.add_text_btn.setEnabled(not lk)

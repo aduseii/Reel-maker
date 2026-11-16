@@ -44,6 +44,8 @@ final class Project: ObservableObject {
 
     // template
     @Published var templateName: String?
+    @Published var templateDirty = false     // changed since the template was saved
+    private var tplSaved: String?
     @Published var locked = false
 
     // video
@@ -343,6 +345,33 @@ final class Project: ObservableObject {
         ]
     }
 
+    /// The template part of what's on screen, for spotting changes: no caption words, no save time,
+    /// no positions that are worked out automatically, and pictures by size and name (not re-encoded).
+    func templateCompare() -> String {
+        var d = templateDict(name: "")
+        d.removeValue(forKey: "saved_at")
+        let ls = (d["layers"] as? [[String: Any]] ?? []).map { l -> [String: Any] in
+            var l = l
+            if !(l["attach_gap"] is NSNull) && l["attach_gap"] != nil || (l["fit_one_line"] as? Bool) == true { l.removeValue(forKey: "y") }
+            if let png = l["png"] as? String { l["png"] = "\(png.count)" }
+            l.removeValue(forKey: "raster")
+            return l
+        }
+        d["layers"] = ls
+        let data = (try? JSONSerialization.data(withJSONObject: d, options: [.sortedKeys])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func markTemplateSaved() {
+        tplSaved = templateName == nil ? nil : templateCompare()
+        if templateDirty { templateDirty = false }
+    }
+
+    func updateDirty() {
+        let dirty = templateName != nil && tplSaved != nil && templateCompare() != tplSaved
+        if dirty != templateDirty { templateDirty = dirty }
+    }
+
     func apply(template d: [String: Any]) {
         func num(_ any: Any?, _ def: CGFloat) -> CGFloat { (any as? NSNumber).map { CGFloat($0.doubleValue) } ?? def }
         let bg = d["background"] as? [String: Any] ?? [:]
@@ -374,6 +403,7 @@ final class Project: ObservableObject {
         selectedID = nil
         locked = true
         refresh()
+        markTemplateSaved()
         grabBackground(at: playhead)
     }
 }
