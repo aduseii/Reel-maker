@@ -2183,7 +2183,10 @@ class ReelMaker(QMainWindow):
                                     "file browsers that support it. Instagram doesn't use this.")
         pg.add(self.cover_embed)
         self.save_cover_too = QCheckBox("Also save the cover as a PNG with the reel")
-        self.save_cover_too.setChecked(True)
+        self.save_cover_too.setToolTip("Optional. Off: only the MP4 is saved (the cover is still inside the reel). "
+                                       "You can always save it yourself with Cover → Save cover.")
+        self.save_cover_too.setChecked(self.settings.value("export_save_cover", False, type=bool))
+        self.save_cover_too.toggled.connect(lambda on: self.settings.setValue("export_save_cover", on))
         pg.add(self.save_cover_too)
         pg.lay.addSpacing(6)
         self.export_btn = QPushButton("Export reel")
@@ -3407,7 +3410,7 @@ class ReelMaker(QMainWindow):
         ex = d.get("export", {})
         self.quality.setValue(ex.get("quality", 0))
         self.fps.setValue(ex.get("fps", 0))
-        self.save_cover_too.setChecked(ex.get("save_cover", True))
+        # "Also save the cover as a PNG" is your own setting, kept on this PC; templates don't change it
         self.cover_first.setChecked(ex.get("cover_first", True))
         self.cover_embed.setChecked(ex.get("cover_embed", True))
 
