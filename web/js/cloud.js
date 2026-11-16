@@ -9,7 +9,11 @@ const INDEX = "_reelmaker_index.json";
 export const TOKEN_URL = "https://github.com/settings/tokens/new?scopes=gist&description=Reel%20Maker%20web";
 
 export const token = () => localStorage.getItem("rm.gh.token") || "";
-export const setToken = (t) => (t ? localStorage.setItem("rm.gh.token", t.trim()) : localStorage.removeItem("rm.gh.token"));
+export function setToken(t) {
+  // a new connection (maybe another account) starts fresh: nothing here counts as synced yet
+  localStorage.removeItem("rm.gh.synced"); localStorage.removeItem("rm.gh.gist");
+  if (t) localStorage.setItem("rm.gh.token", t.trim()); else localStorage.removeItem("rm.gh.token");
+}
 
 async function api(method, path, body) {
   const r = await fetch(API + path, {
@@ -45,7 +49,8 @@ async function text(f) {
   return f.content;
 }
 
-/** Newer wins on each side. Returns { message, downloaded: [file names that came down] }.
+/** Newer wins on each side, and a template renamed or deleted on one side goes on the other.
+ *  Returns { message, downloaded: [file names that came down], removed: [file names removed here] }.
  *  One sync at a time: one asked for while another runs starts when that one ends. */
 let chain = Promise.resolve();
 export function sync() {
@@ -53,27 +58,38 @@ export function sync() {
   chain = run.catch(() => {});
   return run;
 }
+// the template files that were both here and in the cloud after the last sync: one of them missing
+// from one side now means it was renamed or deleted there
+const SYNCED = "rm.gh.synced";
+function synced() { try { return new Set(JSON.parse(localStorage.getItem(SYNCED) || "[]")); } catch { return new Set(); } }
 async function syncOnce() {
   const g = await gist();
   let idx = {};
   try { idx = JSON.parse(await text(g.files[INDEX])).templates || {}; } catch { /* empty index */ }
   const local = Object.fromEntries((await store.all()).map((t) => [t.file, t]));
+  const was = synced();
+  const remote = Object.keys(g.files).filter((n) => n !== INDEX && n.toLowerCase().endsWith(".json"));
   let down = 0, up = 0;
-  const uploads = {}, downloaded = [];
-  for (const [name, f] of Object.entries(g.files)) {
-    if (name === INDEX || !name.toLowerCase().endsWith(".json")) continue;
+  const changes = {}, downloaded = [], removed = [], now = new Set();
+  for (const name of remote) {
     const rs = Number(idx[name] || 0), l = local[name];
-    if (!l || rs > Number(l.json.saved_at || 0) + 0.5) { await store.put(name, await text(f)); down++; downloaded.push(name); }
+    if (!l && was.has(name)) { changes[name] = null; delete idx[name]; continue; }   // deleted here
+    if (!l || rs > Number(l.json.saved_at || 0) + 0.5) { await store.put(name, await text(g.files[name])); down++; downloaded.push(name); }
+    now.add(name);
   }
   for (const [name, l] of Object.entries(local)) {
+    if (!g.files[name] && was.has(name)) { await store.del(name); removed.push(name); continue; }  // gone elsewhere
     const ls = Number(l.json.saved_at || 0);
-    if (!g.files[name] || ls > Number(idx[name] || 0) + 0.5) { uploads[name] = { content: l.text }; idx[name] = ls; up++; }
+    if (!g.files[name] || ls > Number(idx[name] || 0) + 0.5) { changes[name] = { content: l.text }; idx[name] = ls; up++; }
+    now.add(name);
   }
-  if (up) {
-    uploads[INDEX] = { content: JSON.stringify({ templates: idx }, null, 1) };
-    await api("PATCH", `/gists/${g.id}`, { files: uploads });
+  if (Object.keys(changes).length) {
+    changes[INDEX] = { content: JSON.stringify({ templates: idx }, null, 1) };
+    await api("PATCH", `/gists/${g.id}`, { files: changes });
   }
-  return { message: `Synced with GitHub: ${down} downloaded, ${up} uploaded.`, downloaded };
+  localStorage.setItem(SYNCED, JSON.stringify([...now]));
+  const gone = removed.length ? `, ${removed.length} removed` : "";
+  return { message: `Synced with GitHub: ${down} downloaded, ${up} uploaded${gone}.`, downloaded, removed };
 }
 
 export async function remove(file) {

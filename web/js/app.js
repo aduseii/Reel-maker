@@ -283,6 +283,7 @@ function applyState(d) {
   const base = defaults();
   S = { ...base, ...d, background: { ...base.background, ...(d.background || {}) }, video: { ...base.video, ...(d.video || {}) },
         cover: { ...base.cover, ...(d.cover || {}) }, export: { ...base.export, ...(d.export || {}) } };
+  delete S.renamed_from;          // a note for syncing a rename, not part of the layout
   S.layers = (d.layers || []).map((l) => {
     const x = l.kind === "image" ? { ...l, _id: l._id || nextId++ } : { ...newText(""), ...l, _id: l._id || nextId++ };
     delete x.saved_at;
@@ -754,12 +755,13 @@ async function renderTemplates() {
   ul.innerHTML = list.length ? "" : '<li class="muted">No templates yet. Save one, import a file, or connect GitHub to bring yours over.</li>';
   for (const t of list) {
     const li = document.createElement("li");
-    li.innerHTML = `<b></b><button type="button" class="btn">Use</button><button type="button" class="icon danger" title="Delete"><svg viewBox="0 0 24 24"><path d="M4 7h16M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>`;
+    li.innerHTML = `<b></b><button type="button" class="btn">Use</button><button type="button" class="icon rename" title="Rename"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="m13.5 6.5 4 4"/></svg></button><button type="button" class="icon danger" title="Delete"><svg viewBox="0 0 24 24"><path d="M4 7h16M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>`;
     li.querySelector("b").textContent = t.json.name || t.file.replace(/\.json$/, "");
     const use = () => { useTemplate(t.json); tplDialog.close(); };
     li.querySelector("b").addEventListener("click", use);
     li.querySelector(".btn").addEventListener("click", use);
-    li.querySelector(".icon").addEventListener("click", async () => {
+    li.querySelector(".rename").addEventListener("click", () => renameTemplate(t));
+    li.querySelector(".danger").addEventListener("click", async () => {
       if (!confirm(`Delete the template “${t.json.name || t.file}”${cloud.token() ? " here and in your GitHub cloud" : ""}?`)) return;
       await store.del(t.file);
       if (cloud.token()) await cloud.remove(t.file).catch((e) => status(e.message));
@@ -772,6 +774,32 @@ async function renderTemplates() {
   $("#cloudInfo").textContent = on
     ? `Connected${localStorage.getItem("rm.gh.login") ? " as " + localStorage.getItem("rm.gh.login") : ""}. Templates sync with your PC and iPhone through a secret gist.`
     : "Connect the same GitHub account as on your PC to use your templates here.";
+}
+async function renameTemplate(t) {
+  const old = t.json.name || t.file.replace(/\.json$/, "");
+  const input = prompt("New name for the template", old);
+  const name = input && input.trim();
+  if (!name || name === old) return;
+  const file = store.fileName(name);
+  if (file !== t.file && (await store.get(file)) != null) {
+    alert(`There's already a template called “${name}”. Pick another name, or delete that one first.`);
+    return;
+  }
+  // renamed_from lets your other devices that are using it switch to the new name when they sync
+  const d = { ...t.json, name, renamed_from: old, saved_at: Date.now() / 1000 };
+  await store.put(file, JSON.stringify(d, null, 1));
+  if (file !== t.file) {
+    await store.del(t.file);
+    if (cloud.token()) await cloud.remove(t.file).catch((e) => status(e.message));
+  }
+  if (S.name === old) {             // keep using it under its new name; unsaved edits stay on screen
+    S.name = name;
+    localStorage.setItem("rm.lastTemplate", name);
+    updateTemplateUI();
+  }
+  renderTemplates();
+  status(`Renamed “${old}” to “${name}”.`);
+  cloudSync(false);
 }
 $("#tokenLink").href = cloud.TOKEN_URL;
 $("#tplBtn").addEventListener("click", () => { renderTemplates(); tplDialog.showModal(); });
@@ -834,6 +862,13 @@ async function cloudSync(loud = false) {
     if (R.locked && S.name && res.downloaded.includes(store.fileName(S.name))) {
       const t = await store.get(store.fileName(S.name));
       if (t) { useTemplate(JSON.parse(t)); status(`“${S.name}” was updated on another device and reloaded.`); }
+    } else if (S.name && res.removed.includes(store.fileName(S.name))) {
+      // the template in use was renamed or deleted on another device: follow a rename, otherwise let go of it
+      const old = S.name;
+      const moved = (await store.all()).find((t) => res.downloaded.includes(t.file) && t.json.renamed_from === old);
+      if (moved && R.locked) { useTemplate(moved.json); status(`“${old}” was renamed to “${moved.json.name}” on another device.`); }
+      else if (moved) { S.name = moved.json.name; localStorage.setItem("rm.lastTemplate", S.name); updateTemplateUI(); }
+      else { S.name = ""; R.locked = false; localStorage.setItem("rm.lastTemplate", ""); markTemplateSaved(); syncPanel(); status(`“${old}” was deleted on another device.`); }
     }
     if (tplDialog.open) renderTemplates();
   } catch (e) { status("Template sync failed: " + e.message); }

@@ -3283,6 +3283,10 @@ class ReelMaker(QMainWindow):
             a.triggered.connect(lambda _=False, p=path: self.apply_template_file(p))
         if tpls:
             m.addSeparator()
+            rm = m.addMenu("Rename template")
+            for name, path in tpls:
+                a = rm.addAction(name)
+                a.triggered.connect(lambda _=False, n=name, p=path: self.rename_template(n, p))
             dm = m.addMenu("Delete template")
             for name, path in tpls:
                 a = dm.addAction(name)
@@ -3503,6 +3507,38 @@ class ReelMaker(QMainWindow):
         if name == self.template_name:
             self.detach_template()
         self.status(f"Deleted template “{name}”.")
+        self.cloud_sync(quiet=True)
+
+    def rename_template(self, name, path):
+        new, ok = QInputDialog.getText(self, "Rename template", "New name:", text=name)
+        if not ok or not new.strip() or new.strip() == name:
+            return
+        new = new.strip()
+        new_path = self.template_path(new)
+        same_file = os.path.normcase(os.path.abspath(new_path)) == os.path.normcase(os.path.abspath(path))
+        if os.path.exists(new_path) and not same_file:
+            QMessageBox.warning(self, "Rename template", f"There's already a template called “{new}”. "
+                                "Pick another name, or delete that one first.")
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            d["name"] = new
+            d["renamed_from"] = name     # so other devices using it switch to the new name when they sync
+            d["saved_at"] = __import__("time").time()
+            with open(new_path, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+            if not same_file:
+                os.remove(path)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Rename template", f"Couldn't rename the template:\n{e}")
+            return
+        if name == self.template_name:
+            # keep using it under its new name; any unsaved edits stay on screen
+            self.template_name = new
+            self.settings.setValue("last_template", new_path)
+            self.update_template_ui()
+        self.status(f"Renamed “{name}” to “{new}”.")
         self.cloud_sync(quiet=True)
 
     # ---- "Save changes": templates you've changed since they were saved
@@ -4164,7 +4200,11 @@ class ReelMaker(QMainWindow):
                 if os.path.basename(before) in res.get("downloaded_names", ()):
                     self.apply_template_file(before, quiet=True)
                 elif not os.path.exists(before):
-                    self.detach_template()
+                    moved = self.renamed_template(self.template_name, res.get("downloaded_names", ()))
+                    if moved:
+                        self.apply_template_file(moved, quiet=True)
+                    else:
+                        self.detach_template()
             n = res["total"]
             msg = f"Templates synced with GitHub ({n} template{'s' if n != 1 else ''})"
             changes = [f"{res['downloaded']} downloaded" if res["downloaded"] else "",
@@ -4173,6 +4213,18 @@ class ReelMaker(QMainWindow):
             changes = ", ".join(c for c in changes if c)
             self.status(msg + (f": {changes}." if changes else "."))
         self.run_in_thread(lambda: cloud.sync_templates(self.cloud), done)
+
+    def renamed_template(self, old_name, names):
+        """The template (path) among `names` that was renamed from `old_name` on another device, if any."""
+        for n in names:
+            path = os.path.join(TEMPLATE_DIR, n)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    if json.load(f).get("renamed_from") == old_name:
+                        return path
+            except (OSError, ValueError):
+                pass
+        return None
 
     # ============================================================ updates
     def run_in_thread(self, fn, done):

@@ -15,6 +15,14 @@ final class Cloud: ObservableObject {
     /// Bumped after every sync; `lastDownloaded` holds the template files that came down in it.
     @Published var syncCount = 0
     var lastDownloaded: [String] = []
+    /// Template files removed here in the last sync because they were renamed or deleted on another device.
+    var lastRemoved: [String] = []
+    /// The template files that were both here and in the cloud after the last sync: one of them missing
+    /// from one side now means it was renamed or deleted there.
+    private var synced: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "cloud.synced") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "cloud.synced") }
+    }
     private var chain: Task<String, Error>?
 
     private var token: String?
@@ -40,7 +48,7 @@ final class Cloud: ObservableObject {
         if let d = try? JSONSerialization.data(withJSONObject: j) { Keychain.write(d) }
     }
 
-    func signOut() { token = nil; login = nil; gistID = nil; Keychain.delete() }
+    func signOut() { token = nil; login = nil; gistID = nil; synced = []; Keychain.delete() }
 
     func reloadLocal() {
         let files = (try? FileManager.default.contentsOfDirectory(at: Cloud.folder, includingPropertiesForKeys: nil)) ?? []
@@ -115,6 +123,7 @@ final class Cloud: ObservableObject {
                 let me = try await api("GET", "/user") as? [String: Any]
                 await MainActor.run { self.login = me?["login"] as? String }
                 gistID = nil
+                synced = []          // a new sign-in (maybe another account) starts fresh
                 save()
                 return
             }
@@ -174,7 +183,27 @@ final class Cloud: ObservableObject {
         return try await t.value
     }
 
-    /// Two-way: newer templates win on each side. (Deleting is done on the PC.)
+    /// Rename a template here; the next sync renames it in the cloud and on your other devices.
+    /// Returns the renamed file, or throws if another template already has that name.
+    func rename(_ t: TemplateRef, to newName: String) throws -> URL {
+        let dst = Cloud.folder.appendingPathComponent(Cloud.fileName(newName))
+        let same = dst.lastPathComponent == t.file.lastPathComponent
+        if !same && FileManager.default.fileExists(atPath: dst.path) {
+            throw HTTPError(errorDescription: "There's already a template called “\(newName)”.")
+        }
+        guard let d = try? Data(contentsOf: t.file), var j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
+            throw HTTPError(errorDescription: "Couldn't open that template.")
+        }
+        j["name"] = newName
+        j["renamed_from"] = t.name       // so your other devices using it switch to the new name
+        j["saved_at"] = Date().timeIntervalSince1970
+        try JSONSerialization.data(withJSONObject: j, options: [.prettyPrinted]).write(to: dst)
+        if !same { try? FileManager.default.removeItem(at: t.file) }
+        reloadLocal()
+        return dst
+    }
+
+    /// Two-way: newer templates win on each side, and one renamed or deleted on one side goes on the other.
     private func syncOnce() async throws -> String {
         let g = try await gist()
         let files = g["files"] as? [String: [String: Any]] ?? [:]
@@ -185,11 +214,20 @@ final class Cloud: ObservableObject {
         var down = 0, up = 0
         var uploads: [String: Any] = [:]
         var got: [String] = []
+        var removed: [String] = []
+        var now: Set<String> = []
+        let was = synced
         let local = Dictionary(uniqueKeysWithValues: ((try? FileManager.default.contentsOfDirectory(at: Cloud.folder, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension.lowercased() == "json" }.map { ($0.lastPathComponent, $0) })
         for (name, f) in files where name != Cloud.index && name.lowercased().hasSuffix(".json") {
             let rs = (idx[name] as? NSNumber)?.doubleValue ?? 0
             let lu = local[name]
+            if lu == nil && was.contains(name) {          // renamed or deleted here
+                uploads[name] = NSNull()
+                idx.removeValue(forKey: name)
+                continue
+            }
+            now.insert(name)
             if lu == nil || rs > stamp(lu!) + 0.5 {
                 try Data(try await fileText(f).utf8).write(to: Cloud.folder.appendingPathComponent(name))
                 down += 1
@@ -197,6 +235,12 @@ final class Cloud: ObservableObject {
             }
         }
         for (name, u) in local {
+            if files[name] == nil && was.contains(name) {   // renamed or deleted on another device
+                try? FileManager.default.removeItem(at: u)
+                removed.append(name)
+                continue
+            }
+            now.insert(name)
             let ls = stamp(u)
             if files[name] == nil || ls > ((idx[name] as? NSNumber)?.doubleValue ?? 0) + 0.5 {
                 uploads[name] = ["content": String(decoding: try Data(contentsOf: u), as: UTF8.self)]
@@ -208,12 +252,14 @@ final class Cloud: ObservableObject {
             uploads[Cloud.index] = ["content": String(decoding: try JSONSerialization.data(withJSONObject: ["templates": idx]), as: UTF8.self)]
             _ = try await api("PATCH", "/gists/\(id)", json: ["files": uploads])
         }
+        synced = now
         await MainActor.run {
             self.reloadLocal()
             self.lastDownloaded = got
+            self.lastRemoved = removed
             self.syncCount += 1
         }
-        return "Synced: \(down) downloaded, \(up) uploaded."
+        return "Synced: \(down) downloaded, \(up) uploaded" + (removed.isEmpty ? "." : ", \(removed.count) removed.")
     }
 
     static func fileName(_ name: String) -> String {

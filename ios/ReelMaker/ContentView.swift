@@ -35,6 +35,8 @@ struct ContentView: View {
     @State private var showCloud = false
     @State private var saveName = ""
     @State private var showSave = false
+    @State private var renaming: Cloud.TemplateRef?
+    @State private var renameTo = ""
     @Environment(\.scenePhase) private var scenePhase
     @State private var lastAutoSync = Date.distantPast
 
@@ -128,6 +130,11 @@ struct ContentView: View {
             Button("Save") { saveTemplate() }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Saves the layout so every new video uses it, locked in place. The caption box keeps its place and style, not its words.") }
+        .alert("Rename template", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $renameTo)
+            Button("Rename") { renameTemplate() }
+            Button("Cancel", role: .cancel) { renaming = nil }
+        } message: { Text("Renames it here, on your PC and on the website.") }
         .onAppear { autoSync() }
         .onChange(of: scenePhase) { phase in if phase == .active { autoSync() } }
         .onChange(of: cloud.syncCount) { _ in reloadIfUpdated() }
@@ -148,6 +155,25 @@ struct ContentView: View {
     /// After a sync: if the template in use was changed on another device, reload it (your caption's words stay).
     private func reloadIfUpdated() {
         let got = cloud.lastDownloaded
+        // the template in use was renamed or deleted on another device: follow a rename, otherwise let go of it
+        if let name = p.templateName, cloud.lastRemoved.contains(Cloud.fileName(name)) {
+            let moved = got.map { Cloud.folder.appendingPathComponent($0) }.first { u in
+                guard let d = try? Data(contentsOf: u), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return false }
+                return (j["renamed_from"] as? String) == name
+            }
+            if let u = moved, p.locked {
+                applyTemplate(u)
+                p.status = "“\(name)” was renamed to “\(p.templateName ?? "")” on another device."
+            } else if let u = moved {
+                p.templateName = cloud.templates.first { $0.file.lastPathComponent == u.lastPathComponent }?.name
+            } else {
+                p.templateName = nil
+                p.locked = false
+                p.markTemplateSaved()
+                p.status = "“\(name)” was deleted on another device."
+            }
+            return
+        }
         guard !got.isEmpty else { return }
         if let name = p.templateName, p.locked, got.contains(Cloud.fileName(name)) {
             applyTemplate(Cloud.folder.appendingPathComponent(Cloud.fileName(name)))
@@ -172,6 +198,13 @@ struct ContentView: View {
                     Button(t.name) { applyTemplate(t.file) }
                 }
                 Divider()
+                if !cloud.templates.isEmpty {
+                    Menu {
+                        ForEach(cloud.templates) { t in
+                            Button(t.name) { renameTo = t.name; renaming = t }
+                        }
+                    } label: { Label("Rename template", systemImage: "pencil") }
+                }
                 if let name = p.templateName {
                     Button { saveChanges() } label: { Label("Save changes to “\(name)”", systemImage: "checkmark.circle") }
                         .disabled(!p.templateDirty)
@@ -209,6 +242,26 @@ struct ContentView: View {
         guard let name = p.templateName else { return }
         applyTemplate(Cloud.folder.appendingPathComponent(Cloud.fileName(name)))
         p.status = "Back to “\(name)” as it was saved."
+    }
+
+    private func renameTemplate() {
+        guard let t = renaming else { return }
+        renaming = nil
+        let name = renameTo.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, name != t.name else { return }
+        do { _ = try cloud.rename(t, to: name) } catch {
+            p.status = error.localizedDescription + " Pick another name."
+            return
+        }
+        if p.templateName == t.name { p.templateName = name }   // keep using it; unsaved edits stay
+        p.status = "Renamed “\(t.name)” to “\(name)”."
+        if cloud.signedIn {
+            Task {
+                do { _ = try await cloud.sync() } catch {
+                    await MainActor.run { p.status = "Renamed here; cloud sync failed: \(error.localizedDescription)" }
+                }
+            }
+        }
     }
 
     private func saveTemplate() {
