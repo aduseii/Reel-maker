@@ -99,6 +99,110 @@ def find_template(name):
                ". Put template .json files in the repo's templates folder.")
 
 
+# ---------------------------------------------------------------- automatic cover
+def _gray(img, size=(192, 108)):
+    """A small grayscale copy as rows of 0–255 values."""
+    from PySide6.QtCore import Qt
+    small = img.scaled(size[0], size[1], Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(
+        QImage.Format_Grayscale8)
+    w, h, bpl = small.width(), small.height(), small.bytesPerLine()
+    data = bytes(small.constBits())
+    return [data[y * bpl:y * bpl + w] for y in range(h)], w, h
+
+
+def best_window(img):
+    """Where the 9:16 cover window should sit (0–1 across) and how good the frame is there.
+    Looks for the most detailed part of the picture (faces and people are detailed, plain walls aren't),
+    and checks that it's sharp and well exposed."""
+    rows, w, h = _gray(img)
+    col = [0.0] * w
+    total = 0.0
+    lum = 0
+    for y in range(1, h - 1):
+        r, up, dn = rows[y], rows[y - 1], rows[y + 1]
+        for x in range(1, w - 1):
+            g = abs(r[x + 1] - r[x - 1]) + abs(dn[x] - up[x])
+            col[x] += g
+            total += g
+        lum += sum(r)
+    win = max(2, min(w, round(w * (img.height() * 9 / 16) / img.width())))
+    best, best_x = -1.0, 0
+    s = sum(col[:win])
+    for x in range(0, w - win + 1):
+        if x:
+            s += col[x + win - 1] - col[x - 1]
+        # a slight pull toward the middle so a busy edge doesn't win over people in the centre
+        centre = 1 - 0.25 * abs((x + win / 2) / w - 0.5) * 2
+        if s * centre > best:
+            best, best_x = s * centre, x
+    cx = (best_x + win / 2) / w
+    mean = lum / max(1, (h - 2) * w)
+    exposure = 1 - min(1.0, abs(mean - 120) / 120)            # too dark or blown out scores lower
+    sharp = total / max(1, (h - 2) * (w - 2))
+    return cx, sharp * (0.4 + 0.6 * exposure)
+
+
+def cover_candidates(w, n=12):
+    """(time, frame) pairs spread over the trimmed clip, skipping the very start and end (fades, cuts)."""
+    a, b = w.abs_start(), w.abs_end()
+    pad = min(0.6, (b - a) * 0.1)
+    a, b = a + pad, b - pad
+    if b <= a:
+        a = b = (w.abs_start() + w.abs_end()) / 2
+    out = []
+    for i in range(n):
+        t = a + (b - a) * (i + 0.5) / n
+        img = w.fb_frame_at(t)
+        if img is not None:
+            out.append((t, img))
+    return out
+
+
+def pick_cover(w, a):
+    cands = cover_candidates(w)
+    if not cands:
+        return
+    scored = []
+    for t, img in cands:
+        cx, score = best_window(img)
+        scored.append((score, t, img, cx))
+    scored.sort(key=lambda s: s[0], reverse=True)
+    score, t, img, cx = scored[0]
+    w.cover_frame = img
+    w.cover_frame_t = t
+    w.cover_cx, w.cover_cy = cx, 0.5
+    say(f"Cover: picked the frame at {t - w.abs_start():.1f} s (sharpest, best lit, framed on the most detail)")
+
+
+def cover_sheet(w, path, n=12):
+    """Save the candidate covers side by side with their times, to choose one by eye."""
+    from PySide6.QtCore import Qt, QRectF
+    from PySide6.QtGui import QPainter, QColor
+    cands = cover_candidates(w, n)
+    cw, ch, cols = 270, 480, 6
+    rows_n = (len(cands) + cols - 1) // cols
+    sheet = QImage(cols * cw, rows_n * (ch + 34), QImage.Format_RGB32)
+    sheet.fill(QColor("#111111"))
+    p = QPainter(sheet)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    f = QFont(DEFAULT_FONT)
+    f.setPixelSize(22)
+    p.setFont(f)
+    keep = (w.cover_cx, w.cover_cy)
+    for i, (t, img) in enumerate(cands):
+        cx, _ = best_window(img)
+        w.cover_cx, w.cover_cy = cx, 0.5
+        r = w.cover_crop(img)
+        x, y = (i % cols) * cw, (i // cols) * (ch + 34)
+        p.drawImage(QRectF(x + 4, y + 4, cw - 8, ch - 8), img, r)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(QRectF(x, y + ch, cw, 30), Qt.AlignCenter, f"{t - w.abs_start():.1f} s  ·  x {cx:.2f}")
+    p.end()
+    w.cover_cx, w.cover_cy = keep
+    sheet.save(path)
+    say(f"Cover choices: {path}")
+
+
 # ---------------------------------------------------------------- the export
 def get_from_x(url):
     state = {}
@@ -153,6 +257,12 @@ def export(a):
         w.fill_caption(caption.strip())
         say("Caption: " + caption.strip().replace("\n", " / "))
 
+    # the caption sits on the video (like the app's "Sit on video" button), whatever the template says
+    if a.sit_gap >= 0:
+        for o in rm.caption_boxes(w.layers):
+            o.attach_gap = float(a.sit_gap)
+            w.sit_on_video(o, o.attach_gap)
+
     if a.start is not None:
         w.t_start.setValue(max(0.0, a.start))
     if a.end is not None:
@@ -173,6 +283,14 @@ def export(a):
         img = w.fb_frame_at(w.abs_start() + max(0.0, a.cover_time))
         if img is not None:
             w.cover_frame = img
+        w.cover_cx = a.cover_x if a.cover_x is not None else best_window(img)[0] if img is not None else 0.5
+        say(f"Cover: frame at {a.cover_time:.1f} s")
+    else:
+        pick_cover(w, a)
+    if a.cover_x is not None:
+        w.cover_cx = min(1.0, max(0.0, a.cover_x))
+    if a.cover_sheet:
+        cover_sheet(w, a.cover_sheet)
     if a.cover_title is not None:
         w.title.setText(a.cover_title)
     if a.no_cover:
@@ -233,9 +351,15 @@ def main(argv=None):
     ap.add_argument("--end", type=float, help="trim: end, in seconds")
     ap.add_argument("--cover-time", type=float, help="cover: the video frame this many seconds after the start")
     ap.add_argument("--cover-image", help="cover: an image file instead of a video frame")
+    ap.add_argument("--cover-x", type=float,
+                    help="cover: where the 9:16 window sits across the frame, 0 (left) to 1 (right)")
+    ap.add_argument("--cover-sheet", help="save the candidate cover frames side by side as a PNG, to pick by eye")
     ap.add_argument("--cover-title", help="cover: title text (empty string removes the template's title)")
     ap.add_argument("--no-cover", action="store_true", help="don't put a cover frame at the start")
     ap.add_argument("--save-cover", action="store_true", help="also save the cover as a PNG next to the reel")
+    ap.add_argument("--sit-gap", type=float, default=16,
+                    help="the caption sits this many px above the video (default 16, the app's default); "
+                         "-1 keeps the template's own placement")
     ap.add_argument("--quality", choices=["high", "standard", "small"], default="high")
     ap.add_argument("--fps", choices=["30", "60", "source"], help="frame rate (default: the template's)")
     ap.add_argument("--preview", help="also save a still of the first frame with the layout, as a PNG")

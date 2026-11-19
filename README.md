@@ -72,7 +72,12 @@ python app/headless_export.py --template "News" --video clip.mp4 --caption "Your
 python app/headless_export.py --template "News" --x-url https://x.com/user/status/123 --out reel.mp4
 ```
 
-Useful options: `--start` / `--end` (trim, in seconds), `--cover-time` or `--cover-image` (the cover),
+By default the caption box **sits on the video** (16 px above it; `--sit-gap` changes the gap, `-1` keeps the
+template's own placement) and the **cover is picked automatically** from the clip: it skips black, blurry and
+badly lit frames and frames the 9:16 window on the people. `--cover-sheet choices.png` saves the candidates
+side by side to pick one by eye.
+
+Useful options: `--start` / `--end` (trim, in seconds), `--cover-time` / `--cover-x` or `--cover-image` (the cover),
 `--cover-title`, `--save-cover`, `--fps 30|60|source`, `--preview still.png` (a still of the layout to
 check before exporting) and `--list-templates`. `--help` lists them all.
 
