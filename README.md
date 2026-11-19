@@ -49,6 +49,8 @@ The app is plain Python (PySide6) in `app/`:
 | `app/x_import.py` | X link import: finds the post, downloads the video, cleans up the caption, keeps yt-dlp updated |
 | `app/cloud.py` | GitHub sign-in and cloud templates |
 | `app/launch.pyw` | Starts the app and shows a message if startup fails |
+| `app/headless_export.py` | Exports a reel from the command line, with no window (see below) |
+| `templates/` | Template files for headless export |
 | `installer/` | Installer script and build script |
 
 To run it from source on your PC:
@@ -57,6 +59,25 @@ To run it from source on your PC:
 pip install -r requirements.txt
 python app/reel_maker.py
 ```
+
+## Export without the window (headless)
+
+`app/headless_export.py` makes a reel in one command with the app's own engine: same templates,
+text, emoji, logos, cover frame and **High** quality export. It runs on Windows, macOS and Linux
+servers (no screen needed), so scripts and AI assistants can make reels too.
+
+```
+pip install -r requirements.txt
+python app/headless_export.py --template "News" --video clip.mp4 --caption "Your headline" --out reel.mp4
+python app/headless_export.py --template "News" --x-url https://x.com/user/status/123 --out reel.mp4
+```
+
+Useful options: `--start` / `--end` (trim, in seconds), `--cover-time` or `--cover-image` (the cover),
+`--cover-title`, `--save-cover`, `--fps 30|60|source`, `--preview still.png` (a still of the layout to
+check before exporting) and `--list-templates`. `--help` lists them all.
+
+Templates are found by name in `templates/` (this repo) and in the app's template folder. Your
+real settings aren't touched. `--x-url` needs normal internet access to X.
 
 ## Releasing an update
 
